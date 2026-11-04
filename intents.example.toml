@@ -1,0 +1,67 @@
+# Intents: words in the user's own prompts that start an order, and what "done" means.
+# Copy to ~/.config/hubkit/intents.toml (or set paths.intents in config.toml) and edit.
+# The first kind whose words match wins, so put the narrower kind first (hotfix before release).
+
+[intake]
+# An order opens as "open" only if one of these words is present; otherwise "unconfirmed"
+# (no clock alerts until `hubkit order confirm <id>`).
+imperative = ["now", "asap", "need", "must", "do", "make", "start", "run", "merge", "fix", "finish", "go", "urgent"]
+# Explicit holds only. Bare "don't", "wait" or "stop" are NOT holds ("don't wait, merge it now").
+hold_words = ["hold off", "on hold", "put it on hold", "hold the", "hold it", "pause", "not yet", "don't deploy", "dont deploy", "do not deploy", "stand by"]
+# A hold is ignored, and a held order restarts, when one of these is in the prompt.
+urgent_words = ["now", "asap", "urgent", "immediately", "right away", "hurry", "don't wait", "dont wait", "do not wait"]
+# This many chases on one order: the hook prints a stop-loss line (stop other work, report the blocker).
+stop_loss = 3
+# Phrases that contain an order word but are not orders ("the release notes look fine").
+not_order_phrases = ["release notes", "release note", "release branch", "release candidate", "release date", "release process", "release checklist"]
+# An order word in a question is not an order (unless urgent words are present).
+question_start = '(?i)^\W*(why|what|how|did|does|do you|is|are|was|were|can|could|would|should|when|where|who|which|has|have)\b'
+# Orders left unconfirmed this long are expired by `tick`; a hold this long raises an alert.
+unconfirmed_ttl_min = 30
+held_review_min = 120
+cancel_words = ["cancel", "abort", "drop it", "never mind"]
+
+resume_words = ["resume", "go ahead", "continue"]
+# Prompts longer than this never hold, cancel or count as chases (they are discussion).
+verb_max_chars = 120
+# A short prompt matching this while an order is open counts as a chase on that order.
+chase = '(?i)\b(status|eta|done\?|still (not|waiting|running|open)|hold ?up|hurry|where are we|any progress|update\?|why is (it|this|that)|how long)'
+
+[corrections]
+# A human prompt matching one of these regexes (or repeating the previous prompt) makes the prompt
+# hook inject a reminder to record it: learn.py add with the quote.
+patterns = ["(?i)\\bwhy (did|didn't|do|are) (you|u)\\b", "(?i)\\bi (told|asked|said)\\b", "(?i)\\balready (told|said|asked|replied)\\b", "(?i)\\bnot what i (asked|said|meant)\\b"]
+repeat_similarity = 0.6
+repeat_window_min = 30
+
+[kinds.hotfix]
+words = ["hotfix", "hotpatch"]
+first_action_min = 5        # no `order move` within this many minutes -> alert
+stall_min = 10              # no movement for this long -> alert
+dispatch = "Dispatch the hotfix path; merge the named PR first."
+done_when = ["pr_merged", "prod_live"]            # evidence names `order close` requires
+movement_files = []         # globs; a file touched after the order opened counts as movement
+
+[kinds.release]
+words = ["release", "app update"]
+first_action_min = 5
+stall_min = 15
+dispatch = "Dispatch the release path."
+done_when = ["prs_merged", "smoke_passed"]
+movement_files = []
+
+[kinds.merge]
+words = ["merge"]
+first_action_min = 5
+stall_min = 30
+dispatch = "Merge exactly the named set."
+done_when = ["merged"]
+movement_files = []
+
+[kinds.code_red]
+words = ["code red", "p0"]
+first_action_min = 10
+stall_min = 30
+dispatch = "Name an owner and check for a commit or review signal."
+done_when = ["resolved"]
+movement_files = []

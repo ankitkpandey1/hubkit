@@ -1,0 +1,50 @@
+# hubkit config. Copy to ~/.config/hubkit/config.toml (or set $HUBKIT_CONFIG).
+# Everything user-specific lives here, in intents.toml and in overlay.md. Nothing else.
+# Every key is optional; missing keys use the defaults in scripts/hubcore/config.py.
+
+[user]
+name = "Alex"                 # how the hub block names you
+timezone = "Europe/Berlin"    # IANA name; times are stored as epoch and shown in this zone
+
+[hub]
+name = "hub"                  # label in the SessionStart block
+
+[paths]
+# state_dir      = ""         # default $XDG_STATE_HOME/hubkit. Must NOT be inside a git repo.
+# intents        = ""         # default <config dir>/intents.toml, else the skill's intents.example.toml
+# overlay        = ""         # default <config dir>/overlay.md (your personal rules; see SKILL.md)
+# learnings      = ""         # default <state dir>/learnings.md
+# sessions_dir   = "~/.claude/sessions"
+# transcripts_glob = "~/.claude/projects/*/*.jsonl"   # scanned for hook failures of our own hooks
+# extensions_dir = ""         # default <config dir>/ext (see Extension points)
+
+[tools]
+mep = "mep"                   # path or name of the miseenplace CLI
+notify_cmd = "notify-send -u critical -a hubkit"   # watchdog alerts: this command + message; "" = off
+mep_cursor = "hub"            # cursor name passed to `mep watch --cursor`
+
+[mep]
+enabled = true
+timeout_s = 5
+# data_dir = "~/Documents/work-journal"   # exported as MISEENPLACE_DIR for the adapter
+
+[watchdog]
+transcript_scan_hours = 24
+
+[stop_guard]
+# Log only. A final message ending in "?" or containing one of these, while an order is open,
+# writes a would_block row to <state>/stop-guard.jsonl. It never blocks.
+phrases = ["waits for your go", "say go", "want me to", "shall i"]
+
+[private]
+# Words that must never appear in the skill's own files (`hubkit doctor --check-clean`).
+# Keep your names, company and hosts here; this file stays on your machine.
+terms = []
+
+# Extension points (all optional):
+#   intents.toml   - add kinds (words, clocks, done_when evidence names, movement_files globs).
+#   ext/*.py       - in <config dir>/ext. Define any of:
+#                      status_lines(cfg) -> list[str]            extra lines in the status block
+#                      tick_checks(cfg, live_orders) -> list[{"key","msg"}]   extra watchdog alerts
+#   overlay.md     - free text rules that are yours: people, channels, accounts, repos, boxes.
+# Hooks (add to ~/.claude/settings.json, absolute paths; see SKILL.md "Install").
