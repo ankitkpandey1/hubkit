@@ -18,7 +18,7 @@ from .redact import redact_obj
 ROW_MAX = 4096
 # Harness and peer wrappers. The test is a denylist on the whole normalised text, plus: any text
 # that starts with a tag is not a typed prompt, and a payload origin other than "human" is rejected.
-HARNESS_PREFIXES = ("caveat", "this session is being continued", "/compact", "[artifact", "[system")
+HARNESS_PREFIXES = ("caveat", "this session is being continued", "/compact", "[artifact", "[system", "[cross-session")
 HARNESS_MARKERS = (
     "cross-session-message",
     "another-claude-session-sent-a-message",

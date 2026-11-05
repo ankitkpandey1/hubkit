@@ -25,7 +25,13 @@ DEFAULTS: dict = {
         "transcripts_glob": "~/.claude/projects/*/*.jsonl",
         "extensions_dir": "",  # default: <config dir>/ext
     },
-    "tools": {"mep": "mep", "notify_cmd": "", "mep_cursor": "hub"},
+    "tools": {"mep": "mep", "notify_cmd": "", "mep_cursor": "hub", "gh": "gh"},
+    "routed": {"stall_min": 15, "min_chars": 200, "skip_owners": ["inbox"], "gh_timeout_s": 10,
+               "repo": "", "reply_window_min": 60, "queued_wait_min": 60, "owner_logins": {}, "skip_briefs": ["mep watch", "inbox watch"],
+        "activity_globs": [
+            "~/.claude/projects/*/*/subagents/agent-{id}.jsonl",
+            "/tmp/claude-*/*/*/tasks/{id}.output",
+        ], "reviewer_logins": [], "review_words": ["review"], "review_stall_min": 5, "review_overdue_min": 10},
     "mep": {"enabled": True, "timeout_s": 30},
     "watchdog": {"transcript_scan_hours": 24},
     "stop_guard": {"phrases": ["waits for your go", "say go", "want me to", "shall i"]},

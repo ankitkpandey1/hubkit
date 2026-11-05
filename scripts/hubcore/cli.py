@@ -9,9 +9,9 @@ import sys
 import time
 from pathlib import Path
 
-from . import config, hooks, learnings, status, store
+from . import config, hooks, learnings, routed, status, store
 from .orders import Orders
-from .redact import count_hits
+from .redact import count_hits_text
 
 
 def kv(pairs: list[str]) -> dict[str, str]:
@@ -58,7 +58,13 @@ def cmd_order(a, cfg: dict) -> int:
 
 def cmd_work(a, cfg: dict) -> int:
     try:
-        if a.action == "add":
+        if a.action == "add" and a.kind == "routed":
+            if not (a.owner and a.title):
+                raise ValueError("routed items need --owner and --title")
+            prs = routed.refs(cfg, " ".join(a.pr))
+            heads = {u: a.head for u in prs} if a.head else {}
+            print(routed.record(cfg, a.owner, a.title, prs, heads, review=routed.is_review(cfg, a.title + " " + " ".join(a.pr)))["id"])
+        elif a.action == "add":
             print(status.work_add(cfg, a.kind, a.title, a.owner, a.note)["id"])
         elif a.action == "done":
             print(status.work_done(cfg, a.id, a.note))
@@ -78,7 +84,7 @@ def cmd_doctor(a, cfg: dict) -> int:
     print(f"state: {sd}")
     b = hooks.read_bind(cfg)
     print(f"bind: {'live ' + str(b.get('name')) if hooks.bind_alive(b) else 'none or dead'}")
-    for name in ("session", "prompt", "stop", "tick"):
+    for name in ("session", "prompt", "answer", "routed", "stop", "tick", "cron"):
         f = sd / "seen" / name
         print(f"seen/{name}: {int((time.time() - f.stat().st_mtime) / 60)} min ago" if f.exists() else f"seen/{name}: never")
     rows, bad = store.read_rows(sd / "orders.jsonl")
@@ -86,7 +92,7 @@ def cmd_doctor(a, cfg: dict) -> int:
     errs = store.read_rows(sd / "hook-errors.jsonl")[0]
     print(f"hook-errors.jsonl: {len(errs)} rows")
     print(f"transcript scan: {status.hook_errors(cfg)}")
-    hits = sum(count_hits(p.read_text(errors="replace")) for p in sd.rglob("*.jsonl"))
+    hits = sum(count_hits_text(p.read_text(errors="replace")) for p in sd.rglob("*.jsonl"))
     print(f"secret-shaped strings in state (count only): {hits}")
     problems += hits
     if a.check_clean:
@@ -130,6 +136,8 @@ def main(argv: list[str] | None = None) -> int:
     w.add_argument("--title", default="")
     w.add_argument("--owner", default="")
     w.add_argument("--note", default="")
+    w.add_argument("--pr", action="append", default=[], help="routed: PR URL (repeatable)")
+    w.add_argument("--head", default="", help="routed: head sha the work was routed at")
 
     t = sub.add_parser("tick")
     t.add_argument("--no-notify", action="store_true")
@@ -161,6 +169,7 @@ def main(argv: list[str] | None = None) -> int:
         elif a.cmd == "work":
             return cmd_work(a, cfg)
         elif a.cmd == "tick":
+            store.touch_seen(store.state(cfg), "cron")
             if a.if_bound and not (hooks.bind_alive(hooks.read_bind(cfg)) or Orders(cfg).live()):
                 return 0
             for x in status.tick(cfg, notify=not a.no_notify):

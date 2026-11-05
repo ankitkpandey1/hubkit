@@ -1,0 +1,930 @@
+"""Routed work: an outcome ledger for everything the hub hands to a peer session or background agent.
+
+An item is an OUTCOME (owner + PR number), not a message. The PostToolUse hook on SendMessage and
+Agent opens it; a second ask about the same PR to the same owner refreshes it; a chase ("status on
+#7") is only an event on it and never restarts its clock. Time is read from files: nothing from the
+owner for the limit is a stall, the stall climbs a ladder, and every item has one NEXT action.
+`tick` reads each PR with `gh` once per tick; a review that lands at the PR's current head closes a
+review item by itself, a head that moved on is an alert.
+"""
+
+from __future__ import annotations
+
+import glob
+import json
+import os
+import re
+import shutil
+import subprocess
+import time
+from datetime import datetime
+from pathlib import Path
+
+from . import store
+from .orders import PR_REF, PR_URL, load_intents
+from .status import next_work_id, work_load, work_save
+
+ACK = re.compile(
+    r"(?i)^\W*(ack(nowledged)?|ok(ay)?|thanks?|thank you|got it|noted|will do|roger|done)\b"
+)
+CHASE = re.compile(
+    r"(?i)\b(status|eta|updates?|any progress|where are|how long|still (not|waiting|running)|done\?|report back|one[- ]line (state|status)|current state|what state|state of)\b"
+)
+BARE = re.compile(r"(?<![\w/])(?:#|PR\s*#?\s*)(\d{2,6})\b", re.IGNORECASE)
+FROM_NAME = re.compile(r'<cross-session-message[^>]*\bfrom-name="([^"]+)"')
+MAX_PRS = 3
+MAX_QUEUE = 50
+MAX_EVENTS = 20
+SCAN_TAIL = 2_000_000  # first scan of a transcript reads only its last 2 MB
+
+
+def opts(cfg: dict) -> dict:
+    """cfg [routed] overridden by intents.toml [routed]."""
+    return {**cfg["routed"], **load_intents(cfg).get("routed", {})}
+
+
+# ---- what counts as routed work ----
+
+
+def is_review(cfg: dict, text: str, summary: str = "") -> bool:
+    """A review ask: a review word and a PR in the same sentence, or a review word in the summary of a message
+    that names a PR. A review word elsewhere in the text (a handover, a status) does not make it one."""
+    words = [w.lower() for w in opts(cfg)["review_words"]]
+    sentences = [x for x in re.split(r"(?<=[.!?])\s+|\n", text) if x.strip()]
+    if any(any(w in x.lower() for w in words) and PR_REF.search(x) for x in sentences):
+        return True
+    return any(w in summary.lower() for w in words) and bool(PR_REF.search(text + " " + summary))
+
+
+def owner_is_author(cfg: dict, owner: str, author: str) -> bool:
+    """Is the owner the PR's author? A peer or agent has no GitHub login, so this uses the data on hand: an
+    explicit `routed.owner_logins` map (owner name -> login), else the owner's name equals the login or contains
+    it (a login of 4+ characters). An agent id never matches, so it is treated as a non-author."""
+    login = author.lower()
+    if not login:
+        return False
+    mapped = opts(cfg)["owner_logins"].get(owner)
+    return (mapped or "").lower() == login or owner.lower() == login or (len(login) >= 4 and login in owner.lower())
+
+
+def is_chase(cfg: dict, text: str) -> bool:
+    """A short status question about a PR: an event on the existing item, not a new ask. A message with a brief marker
+    (Done-when, Output) or a sentence that opens with an action on a PR (Review #N ...) is an ask whatever else it
+    says; a status question that merely mentions a review ("state of the review on #N") is not."""
+    sentences = [x.strip() for x in re.split(r"(?<=[.!?])\s+|\n", text)]
+    if DELIVERABLE.search(text) or any(DIRECTIVE.match(x) for x in sentences):
+        return False
+    return len(text) < int(opts(cfg)["min_chars"]) and bool(CHASE.search(text))
+
+
+QUEUED = re.compile(
+    r"(?i)\b(?:after|behind|once)\b[^.\n]{0,40}?(?:'s\b|\bqueue\b|\bbatch\b|\bfinish(?:es|ed)?\b|\bdone\b|\bcomplete[sd]?\b|\bahead\b)"
+)
+
+
+def queued_behind(text: str, summary: str = "") -> bool:
+    """The ask says it waits behind other work ("after X's queue", "once Y finishes"): the owner has not started it."""
+    return bool(QUEUED.search(f"{summary}\n{text}"))
+
+
+DELIVERABLE = re.compile(r"(?i)done[- ]when|\boutput\b|\bdeliverable")
+
+
+def is_deliverable_brief(cfg: dict, description: str, prompt: str) -> bool:
+    """A background agent is routed work only when its brief asks for a result (a PR, an Output, a Done-when) and is
+    not a standing watcher (`routed.skip_briefs`); a long-running agent with nothing to deliver cannot stall."""
+    low = f"{description} {prompt}".lower()
+    if any(w.lower() in low for w in opts(cfg)["skip_briefs"]):
+        return False
+    return bool(DELIVERABLE.search(prompt) or PR_REF.search(prompt))
+
+
+def _is_reply(cfg: dict, owner: str, text: str, asked: list[str], now: float | None) -> bool:
+    """The hub answering a peer who wrote to it recently, with no PR to work on and no brief, is not an ask."""
+    if asked or DELIVERABLE.search(text):
+        return False
+    wrote = peers(cfg).get(owner.lower(), 0.0)
+    return (now or time.time()) - wrote < float(opts(cfg)["reply_window_min"]) * 60
+
+
+def peers(cfg: dict) -> dict[str, float]:
+    """Last time each peer wrote to the hub (from the transcript scans)."""
+    try:
+        return json.loads((store.state(cfg) / "peers.json").read_text())
+    except ValueError, OSError:
+        return {}
+
+
+def _note_peers(cfg: dict, events: list[tuple[float, str, str]]) -> None:
+    seen = peers(cfg)
+    for ts, name, _ in events:
+        if name and ts > seen.get(name.lower(), 0.0):
+            seen[name.lower()] = ts
+    store.write_atomic(store.state(cfg) / "peers.json", json.dumps(seen))
+
+
+def _is_follow_up(cfg: dict, owner: str, text: str) -> bool:
+    """To an owner with open items: not an acknowledgement, names no PR, carries no new brief."""
+    return (
+        not ACK.match(text)
+        and not PR_REF.search(text)
+        and not DELIVERABLE.search(text)
+        and not any(s.lower() in owner.lower() for s in opts(cfg)["skip_owners"])
+        and any(i["owner"] == owner for i in items(cfg))
+    )
+
+
+def is_work(cfg: dict, owner: str, text: str, asked: list[str] | None = None) -> bool:
+    """A message is routed work when it names a PR or is long; acknowledgements and the inbox watcher are not."""
+    o = opts(cfg)
+    if any(s.lower() in owner.lower() for s in o["skip_owners"]):
+        return False
+    if asked if asked is not None else PR_REF.search(text):
+        return True
+    return len(text) >= int(o["min_chars"]) and not ACK.match(text)
+
+
+DIRECTIVE = re.compile(
+    r"(?i)\b(re-?review|review|re-?check|check|merge|approve|test|rebase|deploy|fix|land|verify|finish|start|continue)\b"
+    r"(?:[^.\n]|\.(?=\S)){0,60}?(?:https://github\.com/[\w.-]+/[\w.-]+/pull/\d+|#\d{2,}|\bpr\s*#?\d+)(?:[^.\n]|\.(?=\S)){0,300}"
+)
+
+
+def asked_refs(cfg: dict, text: str, summary: str = "", cap: int | None = MAX_QUEUE) -> list[str]:
+    """The PRs the owner is asked to work on. A short message asks about every PR it names. In a long one only
+    the summary and sentences that direct an action at a PR count: a PR named in passing (a bug
+    list, a status) is not an ask."""
+    if len(text) < int(opts(cfg)["min_chars"]):
+        return refs(cfg, f"{summary}\n{text}", cap)
+    spans = [summary, *(m.group(0) for m in DIRECTIVE.finditer(text))]
+    return refs(cfg, "\n".join(spans), cap)
+
+
+def pr_num(ref: str) -> str:
+    return ref.rstrip("/").rsplit("/", 1)[-1].lstrip("#")
+
+
+def refs(cfg: dict, text: str, cap: int | None = MAX_PRS) -> list[str]:
+    """PR refs in a text: full URLs, and bare #N / PR N resolved against `routed.repo` (else left as #N)."""
+    urls = list(dict.fromkeys(PR_URL.findall(text)))
+    seen = {pr_num(u) for u in urls}
+    repo = str(opts(cfg).get("repo", ""))
+    out = list(urls)
+    for n in dict.fromkeys(BARE.findall(text)):
+        if n not in seen:
+            seen.add(n)
+            out.append(f"https://github.com/{repo}/pull/{n}" if repo else f"#{n}")
+    return out[:cap]
+
+
+# ---- gh ----
+
+
+def _gh(cfg: dict) -> str | None:
+    want = os.path.expanduser(cfg["tools"]["gh"])
+    if os.sep in want:
+        return want if os.access(want, os.X_OK) else None
+    found = shutil.which(want)
+    if found:
+        return found
+    for d in ("~/.local/bin", "/usr/local/bin", "/usr/bin"):
+        cand = os.path.join(os.path.expanduser(d), want)
+        if os.access(cand, os.X_OK):
+            return cand
+    return None
+
+
+def _epoch(iso: str) -> float:
+    return datetime.fromisoformat(iso).timestamp()
+
+
+def pr_info(cfg: dict, url: str, timeout: float) -> dict | None:
+    """Head sha, PR author and every review, from gh; None (unknown) on any failure."""
+    exe = _gh(cfg)
+    if exe is None or timeout <= 0 or not url.startswith("http"):
+        return None
+    try:
+        r = subprocess.run(
+            [exe, "pr", "view", url, "--json", "headRefOid,reviews,author"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        data = json.loads(r.stdout)
+        revs = [
+            {
+                "at": _epoch(x["submittedAt"]),
+                "state": str(x.get("state", "")),
+                "commit": str((x.get("commit") or {}).get("oid", "")),
+                "login": str((x.get("author") or {}).get("login", "")),
+            }
+            for x in data["reviews"]
+            if x.get("submittedAt")
+        ]
+        return {
+            "head": str(data["headRefOid"]),
+            "reviews": revs,
+            "author": str((data.get("author") or {}).get("login", "")),
+            "review_at": max((x["at"] for x in revs), default=None),
+        }
+    except OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError:
+        return None
+
+
+def same_head(a: str, b: str) -> bool:
+    return bool(a) and bool(b) and (a.startswith(b) or b.startswith(a))
+
+
+# ---- the items ----
+
+
+def items(cfg: dict) -> list[dict]:
+    return [i for i in work_load(store.state(cfg)) if i.get("kind") == "routed"]
+
+
+def _event(item: dict, kind: str, text: str, now: float) -> None:
+    item["events"] = [
+        *item.get("events", []),
+        {"t": now, "kind": kind, "text": text[:160]},
+    ][-MAX_EVENTS:]
+
+
+def _merge_prs(old: list[str], new: list[str]) -> list[str]:
+    """One ref per PR number; a full URL replaces a bare #N."""
+    by_num: dict[str, str] = {}
+    for ref in [*old, *new]:
+        n = pr_num(ref)
+        if n not in by_num or ref.startswith("http"):
+            by_num[n] = ref
+    return list(by_num.values())[:MAX_PRS]
+
+
+def _nums(prs: list[str]) -> set[str]:
+    return {pr_num(p) for p in prs}
+
+
+def _same_job(i: dict, owner: str, prs: list[str], summary: str) -> bool:
+    if i.get("kind") != "routed" or i["owner"] != owner:
+        return False
+    if prs:
+        return bool(_nums([*i["prs"], *i.get("queue", [])]) & _nums(prs))
+    return not i["prs"]  # no PR named: a follow-up to the same owner is the same outcome
+
+
+def _chase(cfg: dict, item: dict, text: str, heads: dict[str, str], now: float) -> None:
+    """A follow-up to the owner about work already on the item: counted, never a new clock. It answers a moved head
+    or an old-head verdict (the hub acted), so those flags clear and the new head becomes the baseline."""
+    _event(item, "chase", text, now)
+    item["chases"] = int(item.get("chases", 0)) + 1
+    item["chased_level"] = eff_level(cfg, item, now)
+    v = item.get("verdict_old_head")
+    if v:
+        item["verdict_acked"] = [v["commit"], v["head"]]
+    item["head_moved"] = item["verdict_old_head"] = None
+    item["heads"] = {**item["heads"], **heads}
+
+
+def chase_owner(cfg: dict, owner: str, text: str, now: float | None = None) -> dict | None:
+    """A message to an owner who has open items, naming no PR and carrying no new brief, is a follow-up on all of
+    them. Returns the first item, or None when the owner has none."""
+    now = now or time.time()
+    sd = store.state(cfg)
+    with store.locked(sd / "work.lock"):
+        all_ = work_load(sd)
+        mine = [i for i in all_ if i.get("kind") == "routed" and i["owner"] == owner]
+        for i in mine:
+            _chase(cfg, i, text[:120], {}, now)
+        if mine:
+            work_save(sd, all_)
+    return mine[0] if mine else None
+
+
+def record(
+    cfg: dict,
+    owner: str,
+    summary: str,
+    prs: list[str],
+    heads: dict[str, str],
+    tool_use_id: str = "",
+    now: float | None = None,
+    review: bool = False,
+    chase: bool = False,
+    brief: bool = False,
+    queue: list[str] | None = None,
+    waiting: bool = False,
+) -> dict:
+    """Open the outcome, or refresh it (same owner and PR number). A chase only adds an event."""
+    now = now or time.time()
+    sd = store.state(cfg)
+    with store.locked(sd / "work.lock"):
+        all_ = work_load(sd)
+        named = [*prs, *(queue or [])]
+        hit = next((i for i in all_ if _same_job(i, owner, named, summary)), None)
+        follow_up = (
+            hit is not None
+            and not brief
+            and _nums(named) <= _nums([*hit["prs"], *hit.get("queue", [])])
+        )
+        if hit is not None and (chase or follow_up):
+            _chase(cfg, hit, summary, heads, now)
+            if not hit.get("queue"):
+                hit["prs"] = _merge_prs(hit["prs"], prs)  # a full URL replaces a bare #N
+            work_save(sd, all_)
+            return hit
+        if hit is None:
+            hit = {
+                "id": next_work_id(all_),
+                "kind": "routed",
+                "owner": owner,
+                "note": "",
+                "added": now,
+                "last_heard": None,
+                "heads": {},
+                "prs": [],
+                "events": [],
+                "chases": 0,
+            }
+            all_.append(hit)
+        _event(hit, "ask", summary, now)
+        hit.update(
+            title=summary,
+            routed_at=now,
+            prs=prs if queue else _merge_prs(hit["prs"], prs),
+            queue=queue or [],
+            waiting=waiting,
+            verdict_acked=None,
+            review=review,
+            state_ask=chase and not brief,
+            tool_use_id=tool_use_id or hit.get("tool_use_id", ""),
+            head_moved=None,
+            verdict_old_head=None,
+            chased_level=None,
+        )
+        hit["heads"] = {
+            **hit["heads"],
+            **heads,
+        }  # re-asking resets the baseline: the hub has acted on the new head
+        work_save(sd, all_)
+    return hit
+
+
+def from_tool(
+    cfg: dict,
+    tool: str,
+    ti: dict,
+    resp: object,
+    tool_use_id: str,
+    now: float | None = None,
+) -> dict | None:
+    """The item for one SendMessage / Agent call, or None when the call is not routed work."""
+    chase = False
+    if tool == "SendMessage":
+        owner, text = str(ti.get("to") or ti.get("recipient") or ""), ti.get("message")
+        if not owner or not isinstance(text, str):
+            return None
+        if _is_follow_up(cfg, owner, text):
+            return chase_owner(cfg, owner, str(ti.get("summary") or text), now)
+        asked = asked_refs(cfg, text, str(ti.get("summary") or ""))
+        if _is_reply(cfg, owner, text, asked, now) or not is_work(cfg, owner, text, asked):
+            return None
+        summary = str(ti.get("summary") or text.splitlines()[0])[:120]
+        chase = is_chase(cfg, text)
+    elif tool == "Agent" and ti.get(
+        "run_in_background"
+    ):  # a foreground agent hands its result back in-turn
+        text = str(ti.get("prompt") or "")
+        if not is_deliverable_brief(cfg, str(ti.get("description") or ""), text):
+            return None
+        found = re.search(r"agentId: (\w+)", resp) if isinstance(resp, str) else None
+        ident = (
+            resp.get("agentId")
+            if isinstance(resp, dict)
+            else (found.group(1) if found else None)
+        )
+        owner = str(ident or "agent:" + str(ti.get("description", "")))
+        summary = str(ti.get("description") or text.splitlines()[0])[:120]
+    else:
+        return None
+    every = asked_refs(cfg, text, summary)
+    queue = every if len(every) > 1 else []  # one PR per clock: several PRs are a queue, the first is current
+    prs = every[:1] if queue else every
+    heads: dict[str, str] = {}
+    authored = False
+    deadline = time.time() + 3.0  # the hook is synchronous: 3 s in total for baselines
+    for url in prs:
+        info = pr_info(cfg, url, deadline - time.time())
+        if info:
+            heads[url] = info["head"]
+            authored = authored or owner_is_author(cfg, owner, info["author"])
+    return record(
+        cfg,
+        owner,
+        summary,
+        prs,
+        heads,
+        tool_use_id,
+        now,
+        bool(prs) and not authored and not chase and is_review(cfg, text, summary),
+        chase,
+        bool(DELIVERABLE.search(text)),
+        queue,
+        queued_behind(text, summary),
+    )
+
+
+# ---- clocks and the ladder ----
+
+
+def started_at(cfg: dict, item: dict) -> float:
+    """When the owner is expected to start: the ask, or for work queued behind other work, `queued_wait_min` later
+    (until a review shows on the PR)."""
+    t = item.get("routed_at") or item["added"]
+    return t + float(opts(cfg)["queued_wait_min"]) * 60 if item.get("waiting") else t
+
+
+def base(cfg: dict, item: dict) -> float:
+    """Last word from the owner: the later of the start and last heard."""
+    return max(started_at(cfg, item), item.get("last_heard") or 0.0)
+
+
+def limit(cfg: dict, item: dict) -> float:
+    """Stall limit in minutes: reviews are held to the shorter review clock."""
+    o = opts(cfg)
+    return float(o["review_stall_min"] if item.get("review") else o["stall_min"])
+
+
+def overdue(cfg: dict, item: dict, now: float) -> int | None:
+    """Minutes since the ask when a review passes its hard limit (hearing from the owner does not stop it)."""
+    age = int((now - started_at(cfg, item)) / 60)
+    return (
+        age
+        if item.get("review") and age > float(opts(cfg)["review_overdue_min"])
+        else None
+    )
+
+
+def level(cfg: dict, item: dict, now: float) -> int | None:
+    """Ladder step by silence: 0 past 1x the limit, 1 past 2x, 2 past 3x; None while within the limit."""
+    lim = limit(cfg, item)
+    idle = (now - base(cfg, item)) / 60
+    return None if idle <= lim else min(int(idle // lim) - 1, 2)
+
+
+def eff_level(cfg: dict, item: dict, now: float) -> int | None:
+    """level(), but a review past its hard limit counts as at least step 1."""
+    lvl = level(cfg, item, now)
+    return (
+        max(lvl if lvl is not None else 0, 1)
+        if overdue(cfg, item, now) is not None
+        else lvl
+    )
+
+
+def needs_action(cfg: dict, item: dict, now: float) -> bool:
+    """Something the hub must do now: a moved head, a verdict on an old head, or a silence not yet chased at this step."""
+    if item.get("head_moved") or item.get("verdict_old_head"):
+        return True
+    lvl = eff_level(cfg, item, now)
+    return lvl is not None and (
+        item.get("chased_level") is None or item["chased_level"] < lvl
+    )
+
+
+def _pr_no(ref: str) -> str:
+    return "#" + pr_num(ref)
+
+
+def _label(item: dict) -> str:
+    prs = " ".join(_pr_no(u) for u in item["prs"])
+    if item.get("queue"):
+        prs += f" (+{len(item['queue']) - 1} queued)"
+    return f"{item['id']} ({item['title'][:50]}{' ' + prs if prs else ''})"
+
+
+def next_action(cfg: dict, item: dict, now: float) -> str:
+    """The single next action for one item."""
+    o = item["owner"]
+    m, v = item.get("head_moved"), item.get("verdict_old_head")
+    if m:
+        return f"SendMessage {o}: {_pr_no(m['url'])} head moved {m['old'][:7]} -> {m['new'][:7]}; ask for a re-check at the new head"
+    if v:
+        return f"SendMessage {o}: the {v['state']} review landed at {v['commit'][:7]} but the head is {v['head'][:7]}; ask for a re-review at the head"
+    lvl = eff_level(cfg, item, now)
+    if lvl is not None:
+        if item.get("chased_level") is not None and item["chased_level"] >= lvl:
+            nxt = base(cfg, item) + limit(cfg, item) * 60 * (lvl + 2)
+            return f"chased {item.get('chases', 0)}x, waiting; escalate to step {lvl + 1} at {store.clock(cfg, nxt)}"
+        heard = item.get("last_heard")
+        if lvl >= 1 and heard and now - heard < limit(cfg, item) * 60:
+            return f"SendMessage {o} for an ETA on {' '.join(_pr_no(u) for u in item['prs']) or 'the work'}; it reported {int((now - heard) / 60)} min ago, so do not re-brief it"
+        steps = (
+            f"SendMessage {o} for a one-line state",
+            "re-brief this work to another idle peer or a fresh agent (ListAgents first); the new brief opens its own item",
+            "tell the user in the next report in one line (no card), then decide the executor",
+        )
+        return steps[lvl]
+    if item.get("pr_unknown"):
+        if any(not u.startswith("http") for u in item["pr_unknown"]):
+            return "a PR is a bare #N and routed.repo is not set: set [routed] repo in config.toml (or work add --pr with the full URL)"
+        return (
+            "gh could not read the PR: have an agent read it; nothing is known about it"
+        )
+    if item.get("waiting") and now < started_at(cfg, item):
+        return f"queued behind other work: no clock until {store.clock(cfg, started_at(cfg, item))} or until a review shows on the PR; then chase {o}"
+    return f"wait for {o}; next check {store.clock(cfg, base(cfg, item) + limit(cfg, item) * 60)} (limit {int(limit(cfg, item))} min)"
+
+
+def _why(cfg: dict, item: dict, now: float) -> str:
+    if item.get("head_moved"):
+        m = item["head_moved"]
+        return f"{_pr_no(m['url'])} head moved {m['old'][:7]} -> {m['new'][:7]} after the ask"
+    if item.get("verdict_old_head"):
+        return "the review landed on an old head"
+    late = overdue(cfg, item, now)
+    idle = int((now - base(cfg, item)) / 60)
+    if late is not None:
+        return f"review asked {late} min ago, past the hard limit of {opts(cfg)['review_overdue_min']} min"
+    return f"nothing for {idle} min (limit {int(limit(cfg, item))})"
+
+
+def prompt_lines(cfg: dict, now: float) -> list[str]:
+    """One line per owner that needs the hub, most urgent first. The action is always one NEXT."""
+    by_owner: dict[str, list[dict]] = {}
+    for i in items(cfg):
+        if needs_action(cfg, i, now):
+            by_owner.setdefault(i["owner"], []).append(i)
+    out = []
+    for owner, its in by_owner.items():
+        tag = (
+            "OVERDUE"
+            if any(overdue(cfg, i, now) is not None for i in its)
+            else "STALLED"
+        )
+        facts = "; ".join(f"{_label(i)}: {_why(cfg, i, now)}" for i in its)
+        out.append(
+            f"hubkit {tag}: {owner}: {facts}. NEXT: {next_action(cfg, its[0], now)}"
+        )
+    return out
+
+
+def alerts(cfg: dict, now: float) -> list[dict]:
+    """Tick alerts, one per item and ladder step; back-off is applied by the tick."""
+    out = []
+    for i in items(cfg):
+        m = i.get("head_moved")
+        if m:
+            out.append(
+                {
+                    "key": f"{i['id']}:head_moved:{m['new'][:8]}",
+                    "msg": (
+                        f"{_label(i)} to {i['owner']}: {_why(cfg, i, now)}. NEXT: {next_action(cfg, i, now)}"
+                    ),
+                }
+            )
+        lvl = eff_level(cfg, i, now)
+        if lvl is not None and needs_action(cfg, i, now):  # a chased item waits: no alert, no wake-up
+            out.append(
+                {
+                    "key": f"{i['id']}:routed_stalled:L{lvl}",
+                    "msg": (
+                        f"{_label(i)} to {i['owner']}: {_why(cfg, i, now)}. NEXT: {next_action(cfg, i, now)}"
+                    ),
+                }
+            )
+    return out
+
+
+def block_lines(cfg: dict, work: list[dict], now: float) -> list[str]:
+    mine = [i for i in work if i.get("kind") == "routed"]
+    if not mine:
+        return []
+    out = ["routed work (owner, age, last heard, NEXT):"]
+    for i in mine:
+        heard = int((now - i["last_heard"]) / 60) if i.get("last_heard") else None
+        pr = ", ".join(
+            f"{_pr_no(u)}@{i['heads'].get(u, '?')[:7]}" for u in i.get("prs", [])
+        )
+        flags = (f" +{len(i['queue']) - 1} queued" if i.get("queue") else "") + (" REVIEW" if i.get("review") else "") + (
+            " PR unknown" if i.get("pr_unknown") else ""
+        )
+        out.append(
+            f"  {i['id']} -> {i['owner']}: {i['title'][:50]}{' [' + pr + ']' if pr else ''}{flags}; "
+            f"age {int((now - i.get('routed_at', i['added'])) / 60)}m, last heard "
+            f"{'never' if heard is None else str(heard) + 'm ago'}, chased {i.get('chases', 0)}x"
+        )
+        out.append(f"      NEXT: {next_action(cfg, i, now)}")
+    return out
+
+
+# ---- heard-from ----
+
+
+def heard(cfg: dict, events: list[tuple[float, str, str]]) -> int:
+    """events: (epoch, from-name or "", free text). Marks items whose owner or tool use id is named."""
+    if not events:
+        return 0
+    _note_peers(cfg, events)
+    sd = store.state(cfg)
+    n = 0
+    with store.locked(sd / "work.lock"):
+        all_ = work_load(sd)
+        for i in all_:
+            if i.get("kind") != "routed":
+                continue
+            for ts, name, text in events:
+                by_text = not name and (
+                    i["owner"] in text
+                    or bool(i.get("tool_use_id") and i["tool_use_id"] in text)
+                )
+                if (name.lower() == i["owner"].lower() or by_text) and ts > (
+                    i.get("last_heard") or 0
+                ):
+                    i["last_heard"] = ts
+                    n += 1
+                    if i.get("state_ask") and ts > (i.get("routed_at") or 0):
+                        i["answered"] = True  # a state question is answered by one reply
+        for i in [x for x in all_ if x.get("answered")]:
+            _archive(cfg, i, "state question answered", time.time())
+            all_.remove(i)
+        if n:
+            work_save(sd, all_)
+    return n
+
+
+def peer_name(text: str) -> str:
+    m = FROM_NAME.search(text)
+    return m.group(1) if m else ""
+
+
+def _entry_event(o: dict) -> tuple[str, str] | None:
+    """(from-name, text) of a peer message or task notification entry in a transcript, else None.
+
+    Two shapes carry them. A queue-operation entry holds the raw text the moment the message is queued
+    (while the hub is busy, this is the only entry for a long time). A user entry with origin.kind
+    peer / task-notification is written when the hub takes the message up.
+    """
+    if o.get("type") == "queue-operation":
+        text = o.get("content") if o.get("operation") == "enqueue" else None
+        text = text.lstrip() if isinstance(text, str) else ""
+        if text.startswith("<cross-session-message"):
+            return peer_name(text), ""
+        return ("", text) if text.startswith("<task-notification") else None
+    kind = (o.get("origin") or {}).get("kind")
+    if o.get("type") != "user" or kind not in ("peer", "task-notification"):
+        return None
+    c = o.get("message", {}).get("content")
+    text = c if isinstance(c, str) else json.dumps(c)
+    return (peer_name(text), "") if kind == "peer" else ("", text)
+
+
+def scan_transcript(cfg: dict, path: str | Path | None) -> int:
+    """Incremental scan of the hub transcript: peer messages and task notifications are 'heard from'."""
+    if not path:
+        return 0
+    p = Path(path)
+    sp = store.state(cfg) / "routed-scan.json"
+    try:
+        size = p.stat().st_size
+    except OSError:
+        return 0
+    try:
+        seen = json.loads(sp.read_text())
+    except ValueError, OSError:
+        seen = {}
+    prev = seen.get(str(p))
+    first = not isinstance(prev, int) or prev > size
+    off: int = max(0, size - SCAN_TAIL) if first or not isinstance(prev, int) else prev
+    with open(p, "rb") as fh:
+        fh.seek(off)
+        data = fh.read()
+    cut = data.rfind(b"\n") + 1  # only whole lines
+    lines = data[:cut].decode("utf-8", "replace").splitlines()
+    if first and off > 0 and lines:
+        lines = lines[1:]  # the first line may start mid-record
+    events = []
+    for line in lines:
+        if "cross-session-message" not in line and "task-notification" not in line:
+            continue
+        try:
+            o = json.loads(line)
+            hit = _entry_event(o)
+            if hit:
+                events.append((_epoch(o["timestamp"]), *hit))
+        except ValueError, KeyError:
+            continue
+    seen[str(p)] = off + cut
+    store.write_atomic(sp, json.dumps(seen))
+    return heard(cfg, events)
+
+
+def transcript_of(cfg: dict, session_id: str) -> str | None:
+    for f in glob.glob(os.path.expanduser(cfg["paths"]["transcripts_glob"])):
+        if os.path.basename(f) == f"{session_id}.jsonl":
+            return f
+    return None
+
+
+# ---- PR check, once per PR per tick ----
+
+
+def _archive(cfg: dict, item: dict, note: str, now: float) -> None:
+    day = store.day_of(cfg, now)
+    store.append_row(
+        store.state(cfg) / "archive" / f"archive_{day}.jsonl",
+        {"type": "work", **item, "outcome": "done", "done_note": note, "ts": now},
+    )
+
+
+def _landed(
+    cfg: dict, item: dict, got: dict[str, dict | None]
+) -> dict[str, tuple[str, dict | None]]:
+    """Per PR of a review item: ('closed'|'old'|'', detail). The newest review since the ask, from someone but the
+    author, judged against that PR's current head."""
+    need = opts(cfg)["reviewer_logins"]
+    out: dict[str, tuple[str, dict | None]] = {}
+    for u in item["prs"]:
+        info = got.get(u)
+        revs = [
+            r
+            for r in (info["reviews"] if info else [])
+            if r["at"] >= (item.get("routed_at") or item["added"])
+            and r["login"] != info["author"]
+            and (not need or r["login"] in need)
+        ] if info else []
+        if not info or not revs:
+            out[u] = ("", None)
+            continue
+        last = max(revs, key=lambda r: r["at"])
+        if same_head(last["commit"], info["head"]):
+            out[u] = ("closed", {**last, "url": u})
+        else:
+            out[u] = ("old", {**last, "head": info["head"], "url": u})
+    return out
+
+
+HEX_HEAD = re.compile(r"[0-9a-f]{7,40}")
+AGENT_ID = re.compile(r"^[0-9a-f]{12,}$")
+
+
+def agent_activity(cfg: dict, now: float) -> int:
+    """A background agent whose transcript or output file is still growing is not silent: count the file's
+    modification time as heard-from. Returns the number of items refreshed."""
+    sd = store.state(cfg)
+    pats = opts(cfg)["activity_globs"]
+    n = 0
+    with store.locked(sd / "work.lock"):
+        all_ = work_load(sd)
+        for i in all_:
+            if i.get("kind") != "routed" or not AGENT_ID.match(i["owner"]):
+                continue
+            stamps = [
+                m
+                for pat in pats
+                for f in glob.glob(os.path.expanduser(pat.format(id=i["owner"])))
+                if (m := _mtime(f)) is not None
+            ]
+            seen = min(max(stamps, default=0.0), now)
+            if seen > base(cfg, i):
+                i["last_heard"] = seen
+                n += 1
+        if n:
+            work_save(sd, all_)
+    return n
+
+
+def _mtime(path: str) -> float | None:
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return None
+
+
+def _advance(item: dict, det: dict, now: float) -> dict:
+    """A queue item's current PR has its review: move to the next PR with a fresh clock."""
+    done, rest = item["queue"][0], item["queue"][1:]
+    item["queue"] = rest if len(rest) > 1 else []
+    item["prs"] = rest[:1]
+    item["heads"] = {}
+    item.update(routed_at=now, head_moved=None, verdict_old_head=None, verdict_acked=None, chased_level=None)
+    _event(item, "advance", f"{_pr_no(done)} reviewed; now {_pr_no(rest[0]) if rest else 'none'}", now)
+    return {
+        "key": f"{item['id']}:queue_advanced:{pr_num(done)}",
+        "msg": f"{item['id']} to {item['owner']}: {_pr_no(done)} {det['state']} at {det['commit'][:7]}; the clock restarts on the next PR. NEXT: read the review on GitHub and act on it",
+    }
+
+
+def _close_landed(cfg: dict, item: dict, done: dict[str, dict], now: float) -> dict:
+    """Reviews landed at the head for some PRs of a (non-queue) item: drop them from the item and report the gaps.
+    The item is archived when no PR is left."""
+    item["prs"] = [u for u in item["prs"] if u not in done]
+    for u in done:
+        item["heads"].pop(u, None)
+    note = "; ".join(
+        f"{_pr_no(u)} {d['state']} by {d['login']} at {d['commit'][:7]} (the head)"
+        for u, d in done.items()
+    )
+    gap = f" Still open: {' '.join(_pr_no(u) for u in item['prs'])} (no review at its head yet)." if item["prs"] else ""
+    if not item["prs"]:
+        _archive(cfg, item, "review " + note, now)
+    first = next(iter(done.values()))
+    return {
+        "key": f"{item['id']}:review_landed:{pr_num(next(iter(done)))}",
+        "msg": f"{item['id']} to {item['owner']}: {note}.{gap} NEXT: read the review on GitHub and act on the {first['state']} verdict",
+    }
+
+
+def resolve_bare_refs(cfg: dict) -> None:
+    """Items recorded before `routed.repo` was set (or by hand) hold bare #N refs gh cannot read: resolve them."""
+    repo = str(opts(cfg).get("repo", ""))
+    if not repo:
+        return
+    fix = lambda u: u if u.startswith("http") else f"https://github.com/{repo}/pull/{pr_num(u)}"
+    sd = store.state(cfg)
+    with store.locked(sd / "work.lock"):
+        all_ = work_load(sd)
+        if not any(not u.startswith("http") for i in all_ if i.get("kind") == "routed" for u in [*i["prs"], *i.get("queue", [])]):
+            return
+        for i in all_:
+            if i.get("kind") == "routed":
+                i["prs"] = [fix(u) for u in i["prs"]]
+                i["queue"] = [fix(u) for u in i.get("queue", [])]
+                i["heads"] = {fix(u): h for u, h in i["heads"].items()}
+        work_save(sd, all_)
+
+
+def refresh_prs(cfg: dict, now: float) -> list[dict]:
+    """Read head and reviews with gh once per PR. A failure marks the PRs unknown. A moved head is recorded for
+    the alert (it does not reset the stall clock: the pusher is not known). A review after the ask counts as
+    movement. A review item closes when a review lands at the PR's current head; a review on an older head never
+    closes it. Returns the alerts for items closed here."""
+    sd = store.state(cfg)
+    resolve_bare_refs(cfg)
+    todo = {u for i in items(cfg) for u in i["prs"]}
+    if not todo:
+        return []
+    timeout = float(opts(cfg)["gh_timeout_s"])
+    got = {u: pr_info(cfg, u, timeout) for u in sorted(todo)}
+    msgs: list[dict] = []
+    with store.locked(sd / "work.lock"):
+        all_ = work_load(sd)
+        keep = []
+        for i in all_:
+            if i.get("kind") != "routed":
+                keep.append(i)
+                continue
+            i["pr_unknown"] = [u for u in i["prs"] if got.get(u) is None]
+            for u in i["prs"]:
+                info = got.get(u)
+                if not info:
+                    continue
+                old = i["heads"].get(u)
+                if not (old and HEX_HEAD.fullmatch(old)):  # unset, or mangled by an older redaction: rebaseline
+                    i["heads"][u] = info["head"]
+                elif owner_is_author(cfg, i["owner"], info["author"]):
+                    i["review"] = False  # the person asked wrote the PR: their pushes are the work, not a stale review
+                    i["heads"][u] = info["head"]
+                elif not same_head(old, info["head"]):
+                    i["head_moved"] = {
+                        "url": u,
+                        "old": old,
+                        "new": info["head"],
+                        "at": now,
+                    }
+                    _event(i, "head_moved", f"{old[:7]} -> {info['head'][:7]}", now)
+                    i["heads"][u] = info["head"]
+                if i.get("waiting") and info["review_at"] and info["review_at"] > (i.get("routed_at") or 0):
+                    i["waiting"] = False  # a review shows on the PR: the owner has started it
+                if info["review_at"] and info["review_at"] > base(cfg, i):
+                    i["last_heard"] = info["review_at"]
+            res = _landed(cfg, i, got) if i.get("review") else {}
+            old = next((d for v, d in res.values() if v == "old" and d), None)
+            acked = i.get("verdict_acked")
+            i["verdict_old_head"] = (
+                old if old and acked != [old["commit"], old["head"]] else None
+            )
+            done = {u: d for u, (v, d) in res.items() if v == "closed" and d}
+            if done and i.get("queue"):
+                cur = i["prs"][0]
+                if cur in done:
+                    msgs.append(_advance(i, done[cur], now))
+            elif done:
+                msgs.append(_close_landed(cfg, i, done, now))
+                if not i["prs"]:
+                    continue
+            keep.append(i)
+        work_save(sd, keep)
+    return msgs
+
+
+def close_asks(cfg: dict, now: float) -> int:
+    """The user answered: every open ask-the-user item is done."""
+    sd = store.state(cfg)
+    with store.locked(sd / "work.lock"):
+        all_ = work_load(sd)
+        done = [i for i in all_ if i.get("kind") == "ask"]
+        for i in done:
+            _archive(cfg, i, "answered", now)
+        if done:
+            work_save(sd, [i for i in all_ if i.get("kind") != "ask"])
+    return len(done)

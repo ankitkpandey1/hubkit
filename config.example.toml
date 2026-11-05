@@ -48,3 +48,19 @@ terms = []
 #                      tick_checks(cfg, live_orders) -> list[{"key","msg"}]   extra watchdog alerts
 #   overlay.md     - free text rules that are yours: people, channels, accounts, repos, boxes.
 # Hooks (add to ~/.claude/settings.json, absolute paths; see SKILL.md "Install").
+
+[routed]
+# Work the hub hands to peers/agents (SendMessage, Agent hooks). Also settable in intents.toml [routed].
+stall_min = 15            # nothing from the owner this long = STALLED
+review_words = ["review"] # items whose message/summary has one of these are reviews
+review_stall_min = 5      # reviews: chase after this
+review_overdue_min = 10   # reviews: hard OVERDUE this long after routing, whatever the owner said
+skip_owners = ["inbox"]   # never tracked
+min_chars = 200           # a message without a PR is work only from this length
+gh_timeout_s = 10
+queued_wait_min = 60      # work queued "after X" has no review clock until this long after the ask (or a review shows)
+reply_window_min = 60     # a hub reply to a peer that wrote this recently is not an ask
+repo = "owner/name"       # bare #N resolves against this
+owner_logins = {}         # owner name -> GitHub login, for peers who author PRs
+reviewer_logins = []      # empty = any non-author review counts
+skip_briefs = ["mep watch", "inbox watch"]  # standing watchers are never routed work

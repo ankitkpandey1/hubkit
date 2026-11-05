@@ -38,17 +38,50 @@ def redact(text: str) -> tuple[str, int]:
     return f"{text[: min(first, QUOTE_MAX)]}[REDACTED {hits}]", hits
 
 
-def redact_obj(obj, limit: int = QUOTE_MAX * 2):
-    """Redact every string in a JSON-like structure; cap string length."""
+SHA_KEYS = frozenset({"head", "heads", "old", "new", "commit", "oid", "verdict_acked"})
+GIT_SHA = re.compile(r"[0-9a-f]{40}")
+
+
+def redact_obj(obj, limit: int = QUOTE_MAX * 2, sha_ok: bool = False):
+    """Redact every string in a JSON-like structure; cap string length.
+
+    A value that is exactly a 40-hex git sha is kept when it sits under a head/commit field (`SHA_KEYS`): it is
+    a public commit id there, and redacting it breaks the head comparison. Anywhere else it is still redacted."""
     if isinstance(obj, str):
+        if sha_ok and GIT_SHA.fullmatch(obj):
+            return obj
         text, _ = redact(obj)
         return text[:limit]
     if isinstance(obj, dict):
-        return {k: redact_obj(v, limit) for k, v in obj.items()}
+        return {k: redact_obj(v, limit, sha_ok or k in SHA_KEYS) for k, v in obj.items()}
     if isinstance(obj, list):
-        return [redact_obj(v, limit) for v in obj]
+        return [redact_obj(v, limit, sha_ok) for v in obj]
     return obj
 
 
 def count_hits(text: str) -> int:
     return redact(text)[1]
+
+
+def count_hits_obj(obj, sha_ok: bool = False) -> int:
+    """count_hits over a parsed row, with the same head-field exemption as redact_obj."""
+    if isinstance(obj, str):
+        return 0 if sha_ok and GIT_SHA.fullmatch(obj) else count_hits(obj)
+    if isinstance(obj, dict):
+        return sum(count_hits_obj(v, sha_ok or k in SHA_KEYS) for k, v in obj.items())
+    if isinstance(obj, list):
+        return sum(count_hits_obj(v, sha_ok) for v in obj)
+    return 0
+
+
+def count_hits_text(text: str) -> int:
+    """count_hits over JSON lines, row by row; a line that is not JSON is counted as text."""
+    import json
+
+    n = 0
+    for line in text.splitlines():
+        try:
+            n += count_hits_obj(json.loads(line))
+        except ValueError:
+            n += count_hits(line)
+    return n

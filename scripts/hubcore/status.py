@@ -17,7 +17,7 @@ from .redact import redact
 from .orders import Orders
 
 VERSION = 1
-WORK_KINDS = ("active", "tracked", "priority")
+WORK_KINDS = ("active", "tracked", "priority", "routed", "ask")
 STALE_MIN = 15
 MAX_BLOCK_LINES = 25
 
@@ -37,6 +37,10 @@ def work_save(sd: Path, items: list[dict]) -> None:
     store.write_json_atomic(work_path(sd), items)
 
 
+def next_work_id(items: list[dict]) -> str:
+    return "W" + str(max([int(i["id"][1:]) for i in items] + [0]) + 1)
+
+
 def work_add(cfg: dict, kind: str, title: str, owner: str = "", note: str = "") -> dict:
     from .redact import redact_obj
 
@@ -45,8 +49,7 @@ def work_add(cfg: dict, kind: str, title: str, owner: str = "", note: str = "") 
     sd = store.state(cfg)
     with store.locked(sd / "work.lock"):
         items = work_load(sd)
-        nid = "W" + str(max([int(i["id"][1:]) for i in items] + [0]) + 1)
-        item = redact_obj({"id": nid, "kind": kind, "title": title, "owner": owner,
+        item = redact_obj({"id": next_work_id(items), "kind": kind, "title": title, "owner": owner,
                            "note": note, "added": time.time()})
         items.append(item)
         work_save(sd, items)
@@ -107,6 +110,14 @@ def mep_state(cfg: dict, prev: dict | None = None) -> dict:
     return {"state": "ok", "count": len(titles), "titles": titles[:5], "good_at": time.time()}
 
 
+def _is_our_gate(att: dict) -> bool:
+    """The Stop gate blocks on purpose (exit 0 with a decision); the harness logs that as a blocking error, but it
+    is the hook working, not failing."""
+    msg = att.get("blockingError")
+    text = msg.get("blockingError", "") if isinstance(msg, dict) else ""
+    return att.get("hookEvent") == "Stop" and str(text).startswith("hubkit")
+
+
 def hook_errors(cfg: dict) -> dict:
     """Scan recent transcripts for failures of our hooks. Lives outside the hooks."""
     cutoff = time.time() - cfg["watchdog"]["transcript_scan_hours"] * 3600
@@ -125,7 +136,7 @@ def hook_errors(cfg: dict) -> dict:
                         except ValueError:
                             continue
                         cmd = json.dumps(att)
-                        if att.get("type") in kinds and marker in cmd:
+                        if att.get("type") in kinds and marker in cmd and not _is_our_gate(att):
                             count += 1
                             last = json.loads(line).get("timestamp", last)
         except OSError:
@@ -215,9 +226,14 @@ def render_block(cfg: dict, orders: Orders, st: dict | None, now: float | None =
         age = int((now - st["built"]) / 60)
         out.append(f"status built {age} min ago" + (f": UNVERIFIED, stale over {STALE_MIN} min" if age > STALE_MIN else ""))
         for kind in WORK_KINDS:
+            if kind == "routed":
+                continue  # listed below with owner, age and last-heard
             mine = [i for i in st["work"] if i["kind"] == kind]
             if mine:
                 out.append(f"{kind}: " + "; ".join(f"{i['id']} {i['title']}" for i in mine))
+        from . import routed
+
+        out += routed.block_lines(cfg, st["work"], now)
         m = st["mep"]
         if m["state"] in ("ok", "stale"):
             out.append(f"on the user (mep): {m['count']}; first: " + " | ".join(m["titles"][:3])
@@ -277,8 +293,14 @@ def evaluate(cfg: dict, orders: Orders, hook_err: dict, now: float) -> list[dict
         if o.get("deadline") and now > o["deadline"]:
             found.append({"key": f"{o['id']}:deadline",
                           "msg": f"{o['id']} {o['kind']}: past its deadline {store.clock(cfg, o['deadline'])}"})
+    try:
+        from . import routed
+
+        found += routed.alerts(cfg, now)
+    except Exception as e:  # routed tracking must not break the tick
+        found.append({"key": "routed:failed", "msg": f"routed-work check failed: {type(e).__name__}"})
     if hook_err["count"]:
-        found.append({"key": f"hook_errors:{hook_err['count']}",
+        found.append({"key": f"hook_errors:{hook_err['last']}",
                       "msg": f"{hook_err['count']} hubkit hook failures in transcripts (last {hook_err['last']})"})
     for mod in extensions(cfg):
         if hasattr(mod, "tick_checks"):
@@ -287,6 +309,22 @@ def evaluate(cfg: dict, orders: Orders, hook_err: dict, now: float) -> list[dict
             except Exception as e:
                 found.append({"key": f"ext:{mod.__name__}", "msg": f"extension failed: {type(e).__name__}"})
     return found
+
+
+def routed_pass(cfg: dict, now: float) -> list[dict]:
+    """Heard-from scan of the hub transcript, then one gh read per PR. Failures never reach the tick."""
+    from . import hooks, routed
+
+    try:
+        b = hooks.read_bind(cfg)
+        path = routed.transcript_of(cfg, b["session_id"]) if hooks.bind_alive(b) else None
+        if path:
+            routed.scan_transcript(cfg, path)
+        routed.agent_activity(cfg, now)
+        return routed.refresh_prs(cfg, now)
+    except Exception as e:
+        store.append_row(config.state_dir(cfg) / "hook-errors.jsonl", {"where": "routed_pass", "error": repr(e)[:200]})
+    return []
 
 
 def tick(cfg: dict, notify: bool = True, now: float | None = None) -> list[dict]:
@@ -298,10 +336,11 @@ def tick(cfg: dict, notify: bool = True, now: float | None = None) -> list[dict]
             return []
         orders = Orders(cfg)
         orders.repair_archive()
+        closed = routed_pass(cfg, now)
         apath = sd / "alerts.jsonl"
         prior = store.read_rows(apath)[0]
         new = []
-        for a in evaluate(cfg, orders, hook_errors(cfg), now):
+        for a in [*closed, *evaluate(cfg, orders, hook_errors(cfg), now)]:
             if a.get("action"):
                 orders.expire(a["action"][1], "unconfirmed order expired (no confirmation)")
             same = [r for r in prior if r.get("key") == a["key"]]
@@ -322,9 +361,32 @@ def tick(cfg: dict, notify: bool = True, now: float | None = None) -> list[dict]
 
 
 def watch(cfg: dict, interval: float, max_cycles: int) -> int:
-    """Loop tick; exit 0 on the first new alert (the exit wakes the hub), 3 after max_cycles."""
+    """Loop tick; exit 0 on the first alert (the exit wakes the hub), 3 after max_cycles.
+
+    An alert a concurrent cron tick already logged since the watch started also ends the watch, so
+    the hub is woken even when the cron run consumed the back-off slot first.
+    """
+    from . import gate, hooks
+
+    if gate.watch_live(cfg):
+        print("watch already running; this one exits without waking anyone")
+        return 4
+    pidfile = store.state(cfg) / "watch.pid"
+    store.write_atomic(pidfile, f"{os.getpid()} {hooks.proc_start(os.getpid())}")
+    try:
+        return _watch_loop(cfg, interval, max_cycles)
+    finally:
+        pidfile.unlink(missing_ok=True)
+
+
+def _watch_loop(cfg: dict, interval: float, max_cycles: int) -> int:
+    began = time.time()
     for i in range(max_cycles):
-        if tick(cfg, notify=True):
+        tick(cfg, notify=True)
+        fresh = [r for r in store.read_rows(store.state(cfg) / "alerts.jsonl")[0] if r["ts"] >= began]
+        if fresh:
+            for r in fresh:
+                print("ALERT " + r["msg"])
             return 0
         if i + 1 < max_cycles:
             time.sleep(interval)
