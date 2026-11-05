@@ -24,12 +24,12 @@ REVERTS = [
     ("typed paste stays human", "hubcore/store.py", 're.sub(r"</?pasted_content[^>]*>", " ", _normalise(text))', "_normalise(text)", "test_typed_paste_is_still_human"),
     ("evidence required on close", "hubcore/orders.py", "            if problems:\n", "            if False:\n", "test_close_refused_without_evidence_then_accepted"),
     ("bound-hub session match", "hubcore/hooks.py", 'payload.get("session_id") != b["session_id"]', "False", "test_noop_outside_bound_hub"),
-    ("headless no-op", "hubcore/hooks.py", 'bool(sess) and sess.get("kind") == "interactive" and ', "bool(sess) and ", "test_noop_in_headless_session"),
+    ("headless no-op", "hubcore/hooks.py", 'sess is not None and sess.get("kind") == "interactive" and ', "sess is not None and ", "test_noop_in_headless_session"),
     ("hold/cancel verbs", "hubcore/orders.py", "if (hold or cancel or resume) and short:", "if False:", "test_hold_and_cancel_verbs_and_prompt_intents"),
     ("redact before write", "hubcore/store.py", "    row = redact_obj(row)\n", "", "test_append_row_redacts_even_when_the_caller_did_not"),
     ("hook never exits non-zero", "hubcore/hooks.py", "except BaseException as e:  # a hook", "except ZeroDivisionError as e:  # a hook", "test_hook_crash_exits_zero_logs_and_shows_one_line"),
     ("state not in git", "hubcore/store.py", "    if _inside_git(d):", "    if False:", "test_state_inside_git_repo_is_refused"),
-    ("bind liveness", "hubcore/hooks.py", 'return bool(b) and proc_start(int(b["pid"])) == str(b["procStart"])', "return bool(b)", "test_dead_hub_frees_bind_and_session_start_reports_open_orders"),
+    ("bind liveness", "hubcore/hooks.py", '    return proc_start(int(b["pid"])) == str(b["procStart"])', "    return True", "test_dead_hub_frees_bind_and_session_start_reports_open_orders"),
     ("stop_hook_active", "hubcore/hooks.py", ' or payload.get("stop_hook_active")', "", "test_stop_blocks_until_a_watch_is_running_then_lets_the_turn_end"),
     ("alert back-off", "hubcore/status.py", "    return min(1800.0, 600.0 * 2 ** max(n - 1, 0)) if n else 0.0", "    return 0.0", "test_watchdog_alerts_then_backs_off"),
     ("learnings lock", "hubcore/learnings.py", "    return store.locked(path.with_name(f\".{path.name}.lock\"))", "    import contextlib\n    return contextlib.nullcontext()", "test_learn_concurrent_adds_lose_nothing"),
@@ -53,7 +53,7 @@ REVERTS = [
     ("unconfirmed expiry", "hubcore/status.py", 'if o["state"] == "unconfirmed" and age_min > ttl:', "if False:", "test_unconfirmed_order_expires_and_has_no_clock"),
     ("held-too-long alert", "hubcore/status.py", "            if (now - since) / 60 > held_max:", "            if False:", "test_held_order_raises_review_alert_after_limit"),
     ("cancel my meeting cancels nothing", "hubcore/orders.py", "    return live if bare and len(live) == 1 else []", "    return live", "test_cancel_without_order_object_cancels_nothing"),
-    ("question does not open an order", "hubcore/orders.py", 'orderish = has("imperative", text) and not (question and not urgent)', "orderish = True", "test_question_with_order_word_opens_nothing"),
+    ("question does not open an order", "hubcore/orders.py", 'act = " ".join(statements)', "act = text", "test_question_with_order_word_opens_nothing"),
     ("glued glpat and AIza (no word boundary)", "hubcore/redact.py", 're.compile(r"glpat-', 're.compile(r"\\bglpat-', "test_glued_secrets_are_redacted"),
     ("import log redacted", "hubkit", "                    msg = redact(msg)[0]\n", "                    pass\n", "test_import_error_log_is_redacted_and_survives_a_broken_redactor"),
     ("import log survives broken redactor", "hubkit", "except BaseException:  # the redactor", "except ZeroDivisionError:  # the redactor", "test_import_error_log_is_redacted_and_survives_a_broken_redactor"),
@@ -63,7 +63,7 @@ REVERTS = [
     ("redact then truncate", "hubcore/store.py", "    return redact(text)[0][:n]", "    return redact(text[:n])[0]", "test_cut_secret_does_not_leak_a_prefix"),
     ("blocking order lock", "hubcore/orders.py", '        with store.locked(self.sd / "lock"):  # blocking', '        with __import__("contextlib").nullcontext():  # blocking', "test_order_open_waits_for_a_held_lock_instead_of_skipping_it"),
     ("close row before archive row", "hubcore/orders.py", '            self._append(oid, "close", evidence=evidence)  # source of truth first\n            self._die_after("close")\n            self._archive(self.get(oid), "closed", {"evidence": evidence})', '            self._archive(self.get(oid), "closed", {"evidence": evidence})\n            self._die_after("close")\n            self._append(oid, "close", evidence=evidence)', "test_close_row_is_written_before_archive_and_crash_is_repaired"),
-    ("check-clean scans tests and references", "hubcore/cli.py", '"__pycache__" not in p.parts and', '"__pycache__" not in p.parts and "tests" not in p.parts and "references" not in p.parts and', "test_check_clean_flags_a_term_and_passes_when_absent"),
+    ("check-clean scans tests and references", "hubcore/cli.py", '{"__pycache__", ".pytest_cache", ".git"} & set(', '{"__pycache__", ".pytest_cache", ".git", "tests", "references"} & set(', "test_check_clean_flags_a_term_and_passes_when_absent"),
     ("mep fallback dirs for cron PATH", "hubcore/status.py", '("~/.local/bin", "/usr/local/bin", "~/bin")', "()", "test_mep_found_with_cron_style_path"),
     ("mep stale-keep", "hubcore/status.py", 'if prev and prev.get("state") in ("ok", "stale"):', "if False:", "test_slow_mep_keeps_last_good_answer_not_unverified"),
     ("mep timeout default", "hubcore/config.py", '"mep": {"enabled": True, "timeout_s": 30}', '"mep": {"enabled": True, "timeout_s": 5}', "test_default_mep_timeout_covers_a_real_status_call"),
@@ -108,7 +108,7 @@ REVERTS = [
     ('NEXT line in status', 'hubcore/routed.py', 'out.append(f"      NEXT: {next_action(cfg, i, now)}")', 'pass', 'test_every_item_shows_one_next_action'),
     ('review closes at the current head', 'hubcore/routed.py', '            elif done:\n                msgs.append(_close_landed', '            elif False:\n                msgs.append(_close_landed', 'test_review_at_the_current_head_closes_the_item_by_itself'),
     ('old-head review never closes', 'hubcore/routed.py', '        if same_head(last["commit"], info["head"]):\n            out[u]', '        if True:\n            out[u]', 'test_a_review_on_an_older_head_never_closes_the_item'),
-    ('author review is ignored', 'hubcore/routed.py', 'and r["login"] != info["author"]', '', 'test_the_authors_own_review_does_not_close_a_review_item'),
+    ('author review is ignored', 'hubcore/routed.py', '    if rev["login"] != info["author"]:\n        return True\n', '    return True\n', 'test_the_authors_own_review_does_not_close_a_review_item'),
     ('queue: one PR at a time', 'hubcore/routed.py', 'prs = every[:1] if queue else every', 'prs = every', 'test_a_queue_is_clocked_one_pr_at_a_time'),
     ('queue: advance on review', 'hubcore/routed.py', 'if done and i.get("queue"):', 'if False:', 'test_a_queue_is_clocked_one_pr_at_a_time'),
     ('never re-brief a reporting owner', 'hubcore/routed.py', 'if lvl >= 1 and heard and now - heard < limit(cfg, item) * 60:', 'if False:', 'test_next_never_says_re_brief_while_the_owner_is_alive_and_reporting'),
@@ -151,7 +151,7 @@ REVERTS = [
     ('long message: only directed PRs', 'hubcore/routed.py', '    if len(text) < int(opts(cfg)["min_chars"]):\n        return refs', '    if True:\n        return refs', 'test_a_pr_named_in_passing_in_a_long_message_is_not_the_owners_pr'),
     ('long message: directive names a PR', 'hubcore/routed.py', '*(m.group(0) for m in DIRECTIVE.finditer(text))', '*()', 'test_a_pr_named_in_passing_in_a_long_message_is_not_the_owners_pr'),
     ('doctor exempts head shas', 'hubcore/redact.py', 'sum(count_hits_obj(v, sha_ok or k in SHA_KEYS) for k, v in obj.items())', 'sum(count_hits_obj(v, sha_ok) for k, v in obj.items())', 'test_doctor_does_not_call_a_stored_head_sha_a_secret_but_still_finds_secrets'),
-    ('review needs a review word beside a PR', 'hubcore/routed.py', '    if any(any(w in x.lower() for w in words) and PR_REF.search(x) for x in sentences):\n        return True\n    return any(w in summary.lower() for w in words) and', '    if any(w in text.lower() for w in words):\n        return True\n    return any(w in summary.lower() for w in words) and', 'test_a_handover_that_mentions_review_elsewhere_is_not_a_review'),
+    ('review needs a review word beside a PR', 'hubcore/routed.py', '    return "review" in _asks(cfg, strip_examples(text), summary)', '    return any(x.lower() in text.lower() for x in opts(cfg)["review_words"])', 'test_a_handover_that_mentions_review_elsewhere_is_not_a_review'),
     ('author asked: no review tag at routing', 'hubcore/routed.py', 'bool(prs) and not authored and not chase and is_review(', 'bool(prs) and not chase and is_review(', 'test_the_person_asked_being_the_prs_author_is_not_a_review_and_not_a_head_alert'),
     ('author asked: no head alert', 'hubcore/routed.py', '                elif owner_is_author(cfg, i["owner"], info["author"]):', '                elif False:', 'test_the_person_asked_being_the_prs_author_is_not_a_review_and_not_a_head_alert'),
     ('author found later loses the review tag', 'hubcore/routed.py', '                    i["review"] = False  # the person asked', '                    pass  # the person asked', 'test_an_owner_found_to_be_the_author_later_loses_the_review_tag'),
@@ -168,6 +168,42 @@ REVERTS = [
     ('state ask: flagged on the item', 'hubcore/routed.py', 'state_ask=chase and not brief,', 'state_ask=False,', 'test_a_state_ask_is_not_a_review_and_the_owners_reply_closes_it'),
     ('state ask: the owner reply closes it', 'hubcore/routed.py', 'if i.get("state_ask") and ts > (i.get("routed_at") or 0):', 'if False:', 'test_a_state_ask_is_not_a_review_and_the_owners_reply_closes_it'),
     ('chase: an action on a PR or a brief marker is never a chase', 'hubcore/routed.py', 'if DELIVERABLE.search(text) or any(DIRECTIVE.match(x) for x in sentences):', 'if False:', 'test_an_action_on_a_pr_or_a_brief_marker_is_never_a_chase'),
+    ("doctor --check-clean ignores .git", "hubcore/cli.py", '".pytest_cache", ".git"}', '".pytest_cache"}', "test_check_clean_names_the_file_but_ignores_dot_git"),
+    # audited bugs of 11-05
+    ('own PR: a COMMENT at the head counts (item close)', 'hubcore/routed.py', '        and rev["state"].upper().startswith("COMMENT")\n', '        and False\n', 'test_a_comment_at_the_head_closes_a_review_item_on_the_hub_users_own_pr'),
+    ('own PR: a COMMENT at the head counts (queue advance)', 'hubcore/routed.py', '        and rev["state"].upper().startswith("COMMENT")\n', '        and False\n', 'test_a_comment_at_the_head_advances_a_queue_on_the_hub_users_own_pr'),
+    ('own PR: a COMMENT at the head counts (stop gate)', 'hubcore/routed.py', '        and rev["state"].upper().startswith("COMMENT")\n', '        and False\n', 'test_the_stop_gate_accepts_a_comment_at_the_head_on_the_hub_users_own_pr_only'),
+    ("own PR: the gate uses the shared rule", "hubcore/gate.py", "routed.counts_as_review(cfg, r, info) and", 'r["login"] != info["author"] and', "test_the_stop_gate_accepts_a_comment_at_the_head_on_the_hub_users_own_pr_only"),
+    ("own PR: only the configured user's PRs", 'hubcore/routed.py', '        and rev["login"].lower() == me\n', '        and True\n', 'test_the_stop_gate_accepts_a_comment_at_the_head_on_the_hub_users_own_pr_only'),
+    ('fix brief: a review noun is not a review ask', 'hubcore/routed.py', '    if hits and not (LEADS_CHANGE.match(low) and existing and not asks_later):', '    if hits:', 'test_a_fix_brief_that_mentions_a_review_is_not_a_review_item'),
+    ("fix owner: pushes are the work, not a moved head", "hubcore/routed.py", '                elif i.get("pushes") and not i.get("review"):', "                elif False:", "test_a_head_move_by_the_owner_fixing_the_pr_raises_no_alert_but_a_review_item_still_does"),
+    ("fix owner: the ask is flagged as pushing", "hubcore/routed.py", "        pushes_to_pr(cfg, text, summary) and not chase,", "        False,", "test_a_head_move_by_the_owner_fixing_the_pr_raises_no_alert_but_a_review_item_still_does"),
+    ("examples: stripped before PRs are read", "hubcore/routed.py", '    text = strip_examples(text)\n    if len(text) < int(opts(cfg)["min_chars"]):', '    if len(text) < int(opts(cfg)["min_chars"]):', "test_example_and_quoted_pr_numbers_in_a_brief_are_not_tracked"),
+    ('examples: sentences that say example are dropped', 'hubcore/routed.py', '        if skip_next or m:', '        if False:', 'test_example_and_quoted_pr_numbers_in_a_brief_are_not_tracked'),
+    ("examples: quoted spans are dropped", "hubcore/routed.py", "    text = QUOTED.sub(\" \", text)", "    pass", "test_example_and_quoted_pr_numbers_in_a_brief_are_not_tracked"),
+    ("verdict: awaiting wording is not a verdict", "hubcore/gate.py", " and not AWAITING.search(sentence):", ":", "test_awaiting_wording_is_not_a_verdict_but_a_real_verdict_is_still_blocked"),
+    ("order: no hint line for a question", "hubcore/orders.py", "    elif kind and not same and not (hold or cancel) and (urgent", "    elif False and (urgent", "test_a_question_never_opens_an_order_even_with_an_urgent_word"),
+    ("order: a question never opens one (urgent too)", "hubcore/orders.py", 'act = " ".join(statements)', "act = text", "test_a_question_never_opens_an_order_even_with_an_urgent_word"),
+    ("order: an imperative after a question opens", "hubcore/orders.py", "and has(\"imperative\", act):", "and False:", "test_an_imperative_still_opens_an_order_even_after_a_question"),
+    ('agent completed: its item closes', 'hubcore/routed.py', '                if by_text and COMPLETED.search(text) and ts > (i.get("routed_at") or i["added"]):', '                if False:', 'test_a_completed_agent_notification_closes_its_item_so_it_never_stalls'),
+    ("order close: evidence covers every PR", "hubcore/orders.py", "        problems += self._uncovered_prs(o, evidence)", "        pass", "test_close_evidence_must_cover_every_pr_named_in_the_order"),
+    ('ack naming a PR is not work', 'hubcore/routed.py', '    if ACK.match(text) and not (DELIVERABLE.search(text) or DIRECTIVE.search(text) or REQUEST.search(text)):', '    if False:', 'test_an_acknowledgement_that_names_a_pr_is_not_tracked_but_an_ask_that_starts_with_ok_is'),
+    ('ack with a directive is work', 'hubcore/routed.py', ' or DIRECTIVE.search(text) or REQUEST.search(text)):\n        return False  # "Ack', ' or REQUEST.search(text)):\n        return False  # "Ack', 'test_an_acknowledgement_that_names_a_pr_is_not_tracked_but_an_ask_that_starts_with_ok_is'),
+    ("work ids are never reused", "hubcore/status.py", '    nxt = max([int(i["id"][1:]) for i in items] + [last]) + 1', '    nxt = max([int(i["id"][1:]) for i in items] + [0]) + 1', "test_work_ids_are_never_reused_after_an_item_is_archived"),
+    ("doctor flags a stale cron", "hubcore/cli.py", '    if age is None or age > float(cfg["watchdog"]["cron_stale_min"]):', "    if False:", "test_doctor_flags_a_stale_seen_cron_only_when_cron_is_configured"),
+    ("doctor only flags when cron is configured", "hubcore/cli.py", '    if not cron_configured():\n        return', '    if False:\n        return', "test_doctor_flags_a_stale_seen_cron_only_when_cron_is_configured"),
+    ('review ask: a change word does not hide a review verb', 'hubcore/routed.py', '    if hits and not (LEADS_CHANGE.match(low) and existing and not asks_later):', '    if hits and not PUSH.search(low) and not existing:', 'test_review_asks_with_a_change_word_or_a_leading_clause_are_still_reviews'),
+    ('review ask: a later clause asking for a review wins', 'hubcore/routed.py', '    if hits and not (LEADS_CHANGE.match(low) and existing and not asks_later):', '    if hits and not (LEADS_CHANGE.match(low) and existing):', 'test_a_pr_with_review_as_a_noun_is_still_a_review_item'),
+    ('review ask: review as a noun is still a review', 'hubcore/routed.py', '    if hits and not (LEADS_CHANGE.match(low) and existing and not asks_later):', '    if hits and not existing:', 'test_a_pr_with_review_as_a_noun_is_still_a_review_item'),
+    ('examples: only the example part of a sentence goes', 'hubcore/routed.py', '            if m and not skip_next and not m.start() == 0:\n                kept.append(s[: m.start()])\n', '', 'test_review_asks_with_a_change_word_or_a_leading_clause_are_still_reviews'),
+    ('verdict: awaiting is narrow', 'hubcore/gate.py', 'AWAITING = re.compile(\n', 'AWAITING = re.compile(r"(?i)\\b(not yet|until|still need\\w*|waiting)\\b")\n_UNUSED = re.compile(\n', 'test_awaiting_wording_is_not_a_verdict_but_a_real_verdict_is_still_blocked'),
+    ('verdict: "review of #N is done" is a verdict', 'hubcore/gate.py', 'review(\\s+(of|on|for)\\s+\\S+)?\\s+(is\\s+)?', 'review\\s+(is\\s+)?', 'test_awaiting_wording_is_not_a_verdict_but_a_real_verdict_is_still_blocked'),
+    ('agent completed: an older notification does not close', 'hubcore/routed.py', 'COMPLETED.search(text) and ts > (i.get("routed_at") or i["added"]):', 'COMPLETED.search(text):', 'test_a_completion_older_than_the_item_does_not_close_it'),
+    ('agent completed: a review item stays open', 'hubcore/routed.py', '                    if not i.get("review"):  # a review item stays', '                    if True:  # a review item stays', 'test_a_completion_marks_a_review_item_reported_but_leaves_it_open'),
+    ('agent completed: marks the owner reported', 'hubcore/routed.py', '                    i["reported"] = ts', '                    i["reported"] = 0', 'test_a_completion_marks_a_review_item_reported_but_leaves_it_open'),
+    ('ack with a request cue is tracked', 'hubcore/routed.py', ' or REQUEST.search(text)):\n        return False  # "Ack', '):\n        return False  # "Ack', 'test_an_acknowledgement_with_a_request_is_still_tracked'),
+    ('own PR: an empty-body COMMENT is a thread reply', 'hubcore/routed.py', '        and bool(rev["body"].strip())\n', '', 'test_an_inline_thread_reply_on_the_hub_users_own_pr_does_not_close_a_review_item'),
+    ("mep missing: message says how to turn it off", "hubcore/status.py", " if exe is None else type(e).__name__", " if False else type(e).__name__", "test_mep_missing_says_how_to_turn_it_off"),
 ]
 
 
@@ -194,6 +230,9 @@ def main() -> int:
         if r.returncode in (4, 5):  # the named test does not exist: that is no proof
             print(f"BROKEN  {name}: test not collected ({test})", flush=True)
             bad += 1
+            continue
+        if r.returncode == 0 and " skipped" in r.stdout and " passed" not in r.stdout:  # skipped = no proof either way
+            print(f"SKIP  {name}: the test was skipped here ({test})", flush=True)
             continue
         failed = r.returncode != 0
         print(f"{'OK   ' if failed else 'SHAM '} {name}: reverted copy {'fails' if failed else 'STILL PASSES'} ({test})", flush=True)

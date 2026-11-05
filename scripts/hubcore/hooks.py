@@ -9,16 +9,17 @@ import sys
 import time
 import traceback
 from pathlib import Path
+from typing import TypeGuard
 
 from . import config, gate, routed, store
 from .orders import Orders, hook_intake
 from .redact import redact
 from .status import read_status, render_block
 
-
 # ---- bind: hub identity = session id + pid + procStart, liveness read from /proc ----
 
 def proc_start(pid: int) -> str | None:
+    """Start time of a process from /proc (Linux), or None when it is gone."""
     try:
         return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
     except (OSError, IndexError):
@@ -26,6 +27,7 @@ def proc_start(pid: int) -> str | None:
 
 
 def session_file(cfg: dict, pid: int) -> dict | None:
+    """The Claude Code session file for a pid, or None."""
     try:
         return json.loads((config.sessions_dir(cfg) / f"{pid}.json").read_text())
     except (OSError, ValueError):
@@ -48,24 +50,30 @@ def find_session_pid(cfg: dict) -> int | None:
 
 
 def bind_path(cfg: dict) -> Path:
+    """File that records which session is the hub."""
     return store.state(cfg, create=False) / "hub.bind"
 
 
 def read_bind(cfg: dict) -> dict | None:
+    """The hub bind record, or None when absent or unreadable."""
     try:
         return json.loads(bind_path(cfg).read_text())
     except (OSError, ValueError):
         return None
 
 
-def bind_alive(b: dict | None) -> bool:
-    return bool(b) and proc_start(int(b["pid"])) == str(b["procStart"])
+def bind_alive(b: dict | None) -> TypeGuard[dict]:
+    """True when the bind record names a process that is still the same process (pid plus start time)."""
+    if not b:
+        return False
+    return proc_start(int(b["pid"])) == str(b["procStart"])
 
 
 def bind(cfg: dict, pid: int | None) -> str:
+    """Bind the session of `pid` (or of this process tree) as the hub; refuses a second live hub."""
     pid = pid or find_session_pid(cfg)
     sess = session_file(cfg, pid) if pid else None
-    if not sess:
+    if not sess or not pid:
         raise RuntimeError("no Claude session found for this process (pass --pid)")
     if sess.get("kind") != "interactive":
         raise RuntimeError(f"session kind is {sess.get('kind')!r}, only interactive sessions can be the hub")
@@ -80,6 +88,7 @@ def bind(cfg: dict, pid: int | None) -> str:
 
 
 def unbind(cfg: dict) -> str:
+    """Remove the hub bind."""
     bind_path(cfg).unlink(missing_ok=True)
     return "unbound"
 
@@ -92,7 +101,7 @@ def is_hub(cfg: dict, payload: dict) -> bool:
     if not bind_alive(b) or payload.get("session_id") != b["session_id"]:
         return False
     sess = session_file(cfg, int(b["pid"]))
-    return bool(sess) and sess.get("kind") == "interactive" and sess.get("sessionId") == b["session_id"]
+    return sess is not None and sess.get("kind") == "interactive" and sess.get("sessionId") == b["session_id"]
 
 
 # ---- the hooks ----
@@ -124,6 +133,7 @@ def _rebind_candidate(cfg: dict, payload: dict) -> int | None:
 
 
 def hook_session(cfg: dict, payload: dict) -> str:
+    """SessionStart hook: print the status block, and re-bind a hub that resumed."""
     rebound = ""
     if not is_hub(cfg, payload):
         pid = _rebind_candidate(cfg, payload)
@@ -167,6 +177,7 @@ def correction_line(orders: Orders, sd: Path, text: str, now: float) -> str:
 
 
 def hook_prompt(cfg: dict, payload: dict) -> str:
+    """UserPromptSubmit hook: open, chase, hold or cancel orders from the user's words; inject correction and overdue lines."""
     if not is_hub(cfg, payload):
         return ""
     sd = store.state(cfg)

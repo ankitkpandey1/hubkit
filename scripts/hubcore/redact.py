@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import cast
 
 PATTERNS = [
     re.compile(r"AKIA[0-9A-Z]{16}"),
@@ -42,7 +43,7 @@ SHA_KEYS = frozenset({"head", "heads", "old", "new", "commit", "oid", "verdict_a
 GIT_SHA = re.compile(r"[0-9a-f]{40}")
 
 
-def redact_obj(obj, limit: int = QUOTE_MAX * 2, sha_ok: bool = False):
+def redact_obj[T](obj: T, limit: int = QUOTE_MAX * 2, sha_ok: bool = False) -> T:
     """Redact every string in a JSON-like structure; cap string length.
 
     A value that is exactly a 40-hex git sha is kept when it sits under a head/commit field (`SHA_KEYS`): it is
@@ -51,19 +52,20 @@ def redact_obj(obj, limit: int = QUOTE_MAX * 2, sha_ok: bool = False):
         if sha_ok and GIT_SHA.fullmatch(obj):
             return obj
         text, _ = redact(obj)
-        return text[:limit]
+        return cast(T, text[:limit])
     if isinstance(obj, dict):
-        return {k: redact_obj(v, limit, sha_ok or k in SHA_KEYS) for k, v in obj.items()}
+        return cast(T, {k: redact_obj(v, limit, sha_ok or k in SHA_KEYS) for k, v in obj.items()})
     if isinstance(obj, list):
-        return [redact_obj(v, limit, sha_ok) for v in obj]
+        return cast(T, [redact_obj(v, limit, sha_ok) for v in obj])
     return obj
 
 
 def count_hits(text: str) -> int:
+    """Number of secret-shaped strings in `text`."""
     return redact(text)[1]
 
 
-def count_hits_obj(obj, sha_ok: bool = False) -> int:
+def count_hits_obj(obj: object, sha_ok: bool = False) -> int:
     """count_hits over a parsed row, with the same head-field exemption as redact_obj."""
     if isinstance(obj, str):
         return 0 if sha_ok and GIT_SHA.fullmatch(obj) else count_hits(obj)

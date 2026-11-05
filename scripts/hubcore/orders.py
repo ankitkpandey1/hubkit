@@ -19,6 +19,7 @@ LIVE_STATES = ("open", "unconfirmed", "held")
 
 
 def load_intents(cfg: dict) -> dict:
+    """Load the intents.toml in effect."""
     return tomllib.loads(config.intents_path(cfg).read_text(encoding="utf-8"))
 
 
@@ -28,6 +29,7 @@ def _word_re(words: list[str]) -> re.Pattern:
 
 
 def match_kind(intents: dict, text: str) -> str | None:
+    """The first configured kind whose words appear in `text`, else None."""
     for kind, spec in intents.get("kinds", {}).items():
         if _word_re(spec["words"]).search(text):
             return kind
@@ -35,6 +37,7 @@ def match_kind(intents: dict, text: str) -> str | None:
 
 
 def parse_deadline(text: str, now: float, cfg: dict) -> float | None:
+    """Epoch deadline from `in N min` or `by HH:MM` in the text, else None."""
     m = re.search(r"\b(?:in|within)\s+(\d{1,3})\s*min", text, re.I)
     if m:
         return now + int(m[1]) * 60
@@ -101,15 +104,18 @@ class Orders:
         self.intents = load_intents(cfg)
 
     def all(self) -> dict[str, dict]:
+        """Every order, folded from the ledger rows."""
         return fold(store.read_rows(self.path)[0])
 
     def live(self) -> list[dict]:
+        """Orders that are open, unconfirmed or held."""
         return [o for o in self.all().values() if o["state"] in LIVE_STATES]
 
     def _append(self, oid: str, op: str, **kw) -> None:
         store.append_row(self.path, {"id": oid, "op": op, **kw})
 
     def open(self, kind: str, quote: str, state: str = "open", now: float | None = None) -> dict:
+        """Open a new order of `kind` quoting the user's words; returns the folded order."""
         now = now or time.time()
         quote = store.safe(quote, 300)  # redact first, then cut
         with store.locked(self.sd / "lock"):  # blocking: two hooks cannot both open the same order
@@ -125,33 +131,42 @@ class Orders:
         return self.all()[oid]
 
     def get(self, oid: str) -> dict:
+        """One order by id; raises KeyError when unknown."""
         found = self.all().get(oid)
         if found is None:
             raise KeyError(f"no order {oid}")
         return found
 
     def confirm(self, oid: str) -> None:
+        """Turn an unconfirmed order into an open one."""
         self._append(oid, "confirm")
 
     def move(self, oid: str, note: str) -> None:
+        """Record real movement on an order."""
         self._append(oid, "move", note=note)
 
     def add_ref(self, oid: str, refs: list[str]) -> None:
+        """Attach PR or ticket references to an order."""
         self._append(oid, "ref", refs=refs)
 
     def recent_chase(self, o: dict, now: float, window: float = 60.0) -> bool:
+        """True when the order was chased within `window` seconds."""
         return bool(o.get("last_chase")) and now - o["last_chase"] < window
 
     def chase(self, oid: str, quote: str) -> None:
+        """Record that the user asked for status on an order."""
         self._append(oid, "chase", quote=store.safe(quote, 300))
 
     def hold(self, oid: str, quote: str) -> None:
+        """Hold an order, quoting the user's explicit words."""
         self._append(oid, "hold", quote=quote)
 
     def resume(self, oid: str) -> None:
+        """Resume a held order and restart its clock."""
         self._append(oid, "resume")
 
     def cancel(self, oid: str, quote: str) -> None:
+        """Cancel an order, quoting the user's words, and archive it."""
         if not quote.strip():
             raise ValueError("cancel needs the user's words (--quote)")
         with store.locked(self.sd / "lock"):
@@ -165,6 +180,7 @@ class Orders:
             self._archive(self.get(oid), "cancelled", {"quote": store.safe(quote, 300)})
 
     def expire(self, oid: str, why: str) -> None:
+        """Expire an order (for example an unconfirmed one past its TTL) and archive it."""
         with store.locked(self.sd / "lock"):
             o = self.get(oid)
             if o["state"] in LIVE_STATES:
@@ -200,9 +216,19 @@ class Orders:
                     problems.append(f"'{need}': {p} does not exist")
                 elif p.stat().st_mtime < o["opened"]:
                     problems.append(f"'{need}': {p} is older than the order")
+        problems += self._uncovered_prs(o, evidence)
         return problems
 
+    @staticmethod
+    def _uncovered_prs(o: dict, evidence: dict[str, str]) -> list[str]:
+        """Every PR the order names (its quote and refs) must appear in the evidence, by number."""
+        named = dict.fromkeys(re.findall(r"\d+", " ".join(PR_REF.findall(" ".join([o["quote"], *o["refs"]])))))
+        given = set(re.findall(r"\b\d{2,}\b", " ".join(evidence.values())))
+        missing = [n for n in named if n not in given]
+        return [f"evidence does not cover {', '.join('#' + n for n in missing)} (every PR named in the order needs evidence)"] if missing else []
+
     def close(self, oid: str, evidence: dict[str, str]) -> str:
+        """Close an order once every `done_when` evidence name is given; returns a one-line result."""
         with store.locked(self.sd / "lock") as _got:
             o = self.get(oid)
             if o["state"] == "closed":
@@ -232,6 +258,7 @@ class Orders:
         return fixed
 
     def last_movement(self, o: dict) -> float:
+        """Epoch of the latest movement: a `move`, the open time, or a touched movement file."""
         times = [o["opened"], *[t for t, _ in o["moves"]]]
         spec = self.intents["kinds"].get(o["kind"], {})
         for pat in spec.get("movement_files", []):
@@ -242,6 +269,7 @@ class Orders:
         return max(times)
 
     def status_line(self, o: dict, now: float | None = None) -> str:
+        """One line: id, kind, state, ages, chases and what done still needs."""
         now = now or time.time()
         spec = self.intents["kinds"].get(o["kind"], {})
         age = int((now - o["opened"]) / 60)
@@ -282,7 +310,12 @@ def hook_intake(orders: Orders, text: str, now: float | None = None) -> list[str
         kind_text = re.sub(re.escape(phrase), " ", kind_text, flags=re.I)
     kind = match_kind(orders.intents, kind_text)
     live = orders.live()
-    question = bool(re.match(intake.get("question_start", r"(?i)^\W*(why|what|how|did|does|do you|is|are|was|were|can|could|would|should|when|where|who|which|has|have)\b"), text)) or text.rstrip().endswith("?")
+    start = intake.get("question_start", r"(?i)^\W*(why|what|how|did|does|do you|is|are|was|were|can|could|would|should|when|where|who|which|has|have)\b")
+    statements = [s for s in re.split(r"(?<=[.!?])\s+|\n", text) if s.strip() and not (s.rstrip().endswith("?") or re.match(start, s))]
+    act = " ".join(statements)  # only a statement can order; a question never does, urgent word or not
+    for phrase in intake.get("not_order_phrases", []):
+        act = re.sub(re.escape(phrase), " ", act, flags=re.I)
+    act_kind = match_kind(orders.intents, act)
     urgent = has("urgent_words", text)  # "don't wait, merge it now" keeps or restarts the clock
     hold = has("hold_words") and not urgent
     cancel, resume = has("cancel_words"), has("resume_words")
@@ -308,8 +341,8 @@ def hook_intake(orders: Orders, text: str, now: float | None = None) -> list[str
         live = orders.live()
     opened_id = None
     same = [o for o in live if o["kind"] == kind]
-    orderish = has("imperative", text) and not (question and not urgent)
-    if kind and not same and not (hold or cancel) and orderish:
+    if act_kind and not any(o["kind"] == act_kind for o in live) and not (hold or cancel) and has("imperative", act):
+        kind = act_kind
         o = orders.open(kind, text, state="open", now=now)
         opened_id = o["id"]
         spec = orders.intents["kinds"][kind]
@@ -317,6 +350,11 @@ def hook_intake(orders: Orders, text: str, now: float | None = None) -> list[str
             f"hubkit order {o['id']} kind={kind} state={o['state']}, opened from the user's prompt "
             f"\"{text[:100]}\". Confirm this is the user's own order (not a peer or tool message) before acting. "
             f"If yes: {spec.get('dispatch', '')} First action due in {spec.get('first_action_min', 0)} min."
+        )
+    elif kind and not same and not (hold or cancel) and (urgent or (has("imperative", text) and PR_REF.search(text))):
+        lines.append(
+            f"hubkit: no order opened: the prompt is a question, and a question never opens one. If it is an order, "
+            f"say it as one, or open it by hand: hubkit order open --kind {kind} --quote \"<the user's words>\""
         )
     elif same and PR_REF.search(text):  # new PR reference for a live order: input, not a chase
         for o in same:

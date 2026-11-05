@@ -5,9 +5,10 @@
 [user]
 name = "Alex"                 # how the hub block names you
 timezone = "Europe/Berlin"    # IANA name; times are stored as epoch and shown in this zone
+github_login = ""             # your GitHub login: on PRs you wrote, a COMMENT review at the head counts (the reviewer peer posts as you)
 
 [hub]
-name = "hub"                  # label in the SessionStart block
+name = "hub"                  # names the hub in the status block; also the session name used to re-bind a resumed hub
 
 [paths]
 # state_dir      = ""         # default $XDG_STATE_HOME/hubkit. Must NOT be inside a git repo.
@@ -21,12 +22,12 @@ name = "hub"                  # label in the SessionStart block
 [tools]
 mep = "mep"                   # path or name of the miseenplace CLI
 notify_cmd = "notify-send -u critical -a hubkit"   # watchdog alerts: this command + message; "" = off
-mep_cursor = "hub"            # cursor name passed to `mep watch --cursor`
 
 [mep]
-enabled = true
-timeout_s = 5
-# data_dir = "~/Documents/work-journal"   # exported as MISEENPLACE_DIR for the adapter
+# The optional `mep` task-list CLI. Set enabled = false if you do not use it.
+enabled = false               # default true
+timeout_s = 30                # default 30
+# data_dir = "~/Documents/mep-data"   # exported as MISEENPLACE_DIR for the adapter
 
 [watchdog]
 transcript_scan_hours = 24
@@ -47,7 +48,7 @@ terms = []
 #                      status_lines(cfg) -> list[str]            extra lines in the status block
 #                      tick_checks(cfg, live_orders) -> list[{"key","msg"}]   extra watchdog alerts
 #   overlay.md     - free text rules that are yours: people, channels, accounts, repos, boxes.
-# Hooks (add to ~/.claude/settings.json, absolute paths; see SKILL.md "Install").
+# Hooks (add to ~/.claude/settings.json; see the README "Hook setup"). Every key: docs/configuration.md.
 
 [routed]
 # Work the hub hands to peers/agents (SendMessage, Agent hooks). Also settable in intents.toml [routed].

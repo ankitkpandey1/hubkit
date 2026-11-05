@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import re
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -18,15 +18,17 @@ ADDR_RE = re.compile(r"^- addressed: (\d{4}-\d{2}-\d{2}) (.*)$")
 PREAMBLE = (
     "# Hub learnings\n\n"
     "One block per class of mistake. A repeat appends to `seen`.\n"
-    "A class seen 2+ times is promoted into SKILL.md (`learn.py promote-candidates`).\n"
+    "A class seen 2+ times is promoted into the overlay (`learn.py promote-candidates`, then `learn.py promote`).\n"
 )
 
 
 def default_file(cfg: dict) -> Path:
+    """The learnings file: paths.learnings, else <state dir>/learnings.md."""
     return config.path_of(cfg, "learnings", store.state(cfg) / "learnings.md")
 
 
 def read_blocks(path: Path) -> tuple[str, list[list[str]]]:
+    """Split the learnings file into its preamble and one block of lines per class."""
     if not path.exists():
         return PREAMBLE, []
     pre: list[str] = []
@@ -42,24 +44,29 @@ def read_blocks(path: Path) -> tuple[str, list[list[str]]]:
 
 
 def write_blocks(path: Path, pre: str, blocks: list[list[str]]) -> None:
+    """Write the preamble and blocks back atomically."""
     body = "\n\n".join("\n".join(b).rstrip() for b in blocks)
     store.write_atomic(path, pre.rstrip() + "\n\n" + body + "\n")
 
 
 def block_class(block: list[str]) -> str:
+    """The class name of a block (from its header line)."""
     m = HEADER_RE.match(block[0])
     return m["cls"] if m else ""
 
 
 def seen_lines(block: list[str]) -> list[str]:
+    """The dated `seen` lines of a block."""
     return [ln for ln in block if SEEN_RE.match(ln)]
 
 
 def seen_dates(block: list[str]) -> list[str]:
+    """The dates a block's class was seen."""
     return [m[1] for ln in seen_lines(block) if (m := SEEN_RE.match(ln))]
 
 
 def addressed(block: list[str]) -> tuple[str, str] | None:
+    """(date, how) when the block is marked addressed, else None."""
     for ln in block:
         if m := ADDR_RE.match(ln):
             return m[1], m[2]
@@ -67,6 +74,7 @@ def addressed(block: list[str]) -> tuple[str, str] | None:
 
 
 def field(block: list[str], name: str) -> str:
+    """The text of a `- name: ...` line in a block, or an empty string."""
     for ln in block:
         if ln.startswith(f"- {name}: "):
             return ln[len(name) + 4 :]
@@ -74,14 +82,17 @@ def field(block: list[str], name: str) -> str:
 
 
 def clean(text: str) -> str:
+    """Collapse whitespace and redact secrets from user-supplied text."""
     return redact(" ".join(text.split()))[0]
 
 
-def locked_edit(path: Path):
+def locked_edit(path: Path) -> contextlib.AbstractContextManager[bool]:
+    """Exclusive lock around an edit of `path`."""
     return store.locked(path.with_name(f".{path.name}.lock"))
 
 
 def overlay_path(cfg: dict) -> Path:
+    """The overlay file (personal rules): paths.overlay, else <config dir>/overlay.md."""
     return config.path_of(cfg, "overlay", Path(cfg["_config_dir"]) / "overlay.md")
 
 
@@ -101,6 +112,7 @@ def _set_basis(block: list[str], basis: str) -> None:
 
 
 def add(path: Path, cls: str, quote: str, day: str, gate: str = "?", basis: str = "", **fields: str) -> str:
+    """Record a correction: new block for a new class, a dated `seen` line for a repeat."""
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", cls):
         raise ValueError("--class must be kebab-case (a-z, 0-9, -)")
     q = clean(quote).replace('"', "'")
@@ -187,10 +199,12 @@ def promote(path: Path, overlay: Path, cls: str, gate: str, rule: str) -> str:
 
 
 def last_seen(block: list[str]) -> str:
+    """Latest date a block was seen, or an empty string."""
     return max(seen_dates(block), default="")
 
 
 def recent(path: Path, n: int) -> list[list[str]]:
+    """The `n` most recently seen blocks."""
     _, blocks = read_blocks(path)
     return sorted(blocks, key=last_seen)[-n:]
 

@@ -46,14 +46,74 @@ def opts(cfg: dict) -> dict:
 # ---- what counts as routed work ----
 
 
+PUSH = re.compile(
+    r"(?i)\b(fix(?:es|ed)?|address|rebase|implement|resolve|amend|patch|push|rework|refactor)\b"
+)
+EXAMPLE = re.compile(r"(?i)\b(examples?|e\.g\.|for instance|such as|sample|placeholder|hypothetical)\b")
+QUOTED = re.compile(r"```.*?```|`[^`\n]*`|\"[^\"\n]*\"|\u201c[^\u201d\n]*\u201d", re.S)
+NOUN_BEFORE = re.compile(r"(?i)\b(the|his|her|their|its|a|an|my|our|your|that|this|in|from|with)\s+$")
+NOUN_AFTER = re.compile(r"(?i)^s?\s+(comments?|findings?|feedback|notes?|threads?|rounds?)\b")
+
+
+def strip_examples(text: str) -> str:
+    """The text without what only illustrates: code fences, backtick and quoted spans, and the part of a sentence from
+    "example", "e.g." or "such as" on (the line after a header that ends in a colon goes too). What comes before the marker
+    stays: "Review #7, e.g. the loader part" still asks for #7. A PR number inside an example is not an ask."""
+    text = QUOTED.sub(" ", text)
+    kept: list[str] = []
+    skip_next = False
+    for s in re.split(r"(?<=[.!?])\s+|\n", text.replace("e.g.", "example")):
+        m = EXAMPLE.search(s)
+        if skip_next or m:
+            skip_next = bool(m) and s.rstrip().endswith(":")
+            if m and not skip_next and not m.start() == 0:
+                kept.append(s[: m.start()])
+            continue
+        kept.append(s)
+    return "\n".join(kept)
+
+
+LEADS_CHANGE = re.compile(
+    r"(?i)^\W*(?:(?:please|then|and|also)\s+)*(?:fix(?:es|ed)?|address|resolve|apply|rebase|implement|amend|patch|push|rework|refactor)\b"
+)
+
+
+def _kinds(cfg: dict, sentence: str) -> set[str]:
+    """What the owner may be asked to do in one sentence. A review word beside a PR is a review ask by default
+    ("review #7", "needs a review", "can I get a review on #7"). The one exception: the sentence opens with a change
+    verb (fix, address, resolve, apply, ...), every review word in it names an existing review (his review, the
+    review comments) and no later clause ("then give #7 a review") asks for one, so the owner is asked to change the
+    PR, not to review it. "push" marks a change verb anywhere."""
+    low = sentence.lower()
+    out = {"push"} if PUSH.search(low) else set()
+    hits = [m for w in (x.lower() for x in opts(cfg)["review_words"]) for m in re.finditer(re.escape(w), low)]
+    existing = all(NOUN_BEFORE.search(low[: m.start()]) or NOUN_AFTER.match(low[m.end() :]) for m in hits)
+    words = [x.lower() for x in opts(cfg)["review_words"]]
+    later = [c.strip() for c in re.split(r",|\bthen\b|\band\b", low)[1:]]
+    asks_later = any(any(w in c for w in words) and not LEADS_CHANGE.match(c) for c in later)
+    if hits and not (LEADS_CHANGE.match(low) and existing and not asks_later):
+        out.add("review")
+    return out
+
+
+def _asks(cfg: dict, text: str, summary: str = "") -> set[str]:
+    """The kinds of ask (see _kinds) in the sentences that name a PR, plus the summary when the text names one."""
+    sentences = [x for x in re.split(r"(?<=[.!?])\s+|\n", text) if x.strip() and PR_REF.search(x)]
+    if summary.strip() and PR_REF.search(text + " " + summary):
+        sentences.append(summary)
+    return set().union(*(_kinds(cfg, x) for x in sentences)) if sentences else set()
+
+
 def is_review(cfg: dict, text: str, summary: str = "") -> bool:
-    """A review ask: a review word and a PR in the same sentence, or a review word in the summary of a message
-    that names a PR. A review word elsewhere in the text (a handover, a status) does not make it one."""
-    words = [w.lower() for w in opts(cfg)["review_words"]]
-    sentences = [x for x in re.split(r"(?<=[.!?])\s+|\n", text) if x.strip()]
-    if any(any(w in x.lower() for w in words) and PR_REF.search(x) for x in sentences):
-        return True
-    return any(w in summary.lower() for w in words) and bool(PR_REF.search(text + " " + summary))
+    """A review ask: the owner is asked to review a PR, i.e. a sentence naming a PR leads with a review word (or the
+    summary does). A review word elsewhere (a handover, a status) or as a noun after another action ("fix the
+    findings in his review of #7") does not make it one."""
+    return "review" in _asks(cfg, strip_examples(text), summary)
+
+
+def pushes_to_pr(cfg: dict, text: str, summary: str = "") -> bool:
+    """The owner is asked to change the PR (fix, rebase, address findings): its own pushes move the head."""
+    return "push" in _asks(cfg, strip_examples(text), summary)
 
 
 def owner_is_author(cfg: dict, owner: str, author: str) -> bool:
@@ -139,11 +199,16 @@ def is_work(cfg: dict, owner: str, text: str, asked: list[str] | None = None) ->
     o = opts(cfg)
     if any(s.lower() in owner.lower() for s in o["skip_owners"]):
         return False
+    if ACK.match(text) and not (DELIVERABLE.search(text) or DIRECTIVE.search(text) or REQUEST.search(text)):
+        return False  # "Ack #399 hold": a bare acknowledgement that names a PR is not an ask; any request cue makes it one
     if asked if asked is not None else PR_REF.search(text):
         return True
     return len(text) >= int(o["min_chars"]) and not ACK.match(text)
 
 
+REQUEST = re.compile(
+    r"(?i)\b(please|pls|needs?|needed|next|your|you|eyes|look|review|check|fix|merge|deploy|rebase|send|take|handle|findings?|can|could|would|should|must|do)\b|\?"
+)
 DIRECTIVE = re.compile(
     r"(?i)\b(re-?review|review|re-?check|check|merge|approve|test|rebase|deploy|fix|land|verify|finish|start|continue)\b"
     r"(?:[^.\n]|\.(?=\S)){0,60}?(?:https://github\.com/[\w.-]+/[\w.-]+/pull/\d+|#\d{2,}|\bpr\s*#?\d+)(?:[^.\n]|\.(?=\S)){0,300}"
@@ -154,6 +219,7 @@ def asked_refs(cfg: dict, text: str, summary: str = "", cap: int | None = MAX_QU
     """The PRs the owner is asked to work on. A short message asks about every PR it names. In a long one only
     the summary and sentences that direct an action at a PR count: a PR named in passing (a bug
     list, a status) is not an ask."""
+    text = strip_examples(text)
     if len(text) < int(opts(cfg)["min_chars"]):
         return refs(cfg, f"{summary}\n{text}", cap)
     spans = [summary, *(m.group(0) for m in DIRECTIVE.finditer(text))]
@@ -161,6 +227,7 @@ def asked_refs(cfg: dict, text: str, summary: str = "", cap: int | None = MAX_QU
 
 
 def pr_num(ref: str) -> str:
+    """The PR number at the end of a URL or `#N` reference."""
     return ref.rstrip("/").rsplit("/", 1)[-1].lstrip("#")
 
 
@@ -212,12 +279,13 @@ def pr_info(cfg: dict, url: str, timeout: float) -> dict | None:
             check=False,
         )
         data = json.loads(r.stdout)
-        revs = [
+        revs: list[dict] = [
             {
                 "at": _epoch(x["submittedAt"]),
                 "state": str(x.get("state", "")),
                 "commit": str((x.get("commit") or {}).get("oid", "")),
                 "login": str((x.get("author") or {}).get("login", "")),
+                "body": str(x.get("body") or ""),
             }
             for x in data["reviews"]
             if x.get("submittedAt")
@@ -232,7 +300,28 @@ def pr_info(cfg: dict, url: str, timeout: float) -> dict | None:
         return None
 
 
+def counts_as_review(cfg: dict, rev: dict, info: dict) -> bool:
+    """Does this review count as the review that was asked for? A non-author review does. On a PR written by the
+    hub's user (`user.github_login`) the reviewer peer posts from that same account, and GitHub allows only a
+    COMMENT there, so a COMMENT review with a body counts on such a PR. A COMMENT with an empty body is what a reply in
+    an inline thread leaves behind (gh gives each review's `body`), so it does not. `reviewer_logins`, when set,
+    limits who counts."""
+    need = opts(cfg)["reviewer_logins"]
+    if need and rev["login"] not in need:
+        return False
+    if rev["login"] != info["author"]:
+        return True
+    me = str(cfg["user"].get("github_login", "")).lower()
+    return (
+        bool(me)
+        and rev["login"].lower() == me
+        and rev["state"].upper().startswith("COMMENT")
+        and bool(rev["body"].strip())
+    )
+
+
 def same_head(a: str, b: str) -> bool:
+    """True when two shas agree on their common prefix."""
     return bool(a) and bool(b) and (a.startswith(b) or b.startswith(a))
 
 
@@ -240,6 +329,7 @@ def same_head(a: str, b: str) -> bool:
 
 
 def items(cfg: dict) -> list[dict]:
+    """All routed work items."""
     return [i for i in work_load(store.state(cfg)) if i.get("kind") == "routed"]
 
 
@@ -313,6 +403,7 @@ def record(
     brief: bool = False,
     queue: list[str] | None = None,
     waiting: bool = False,
+    pushes: bool = False,
 ) -> dict:
     """Open the outcome, or refresh it (same owner and PR number). A chase only adds an event."""
     now = now or time.time()
@@ -334,7 +425,7 @@ def record(
             return hit
         if hit is None:
             hit = {
-                "id": next_work_id(all_),
+                "id": next_work_id(sd, all_),
                 "kind": "routed",
                 "owner": owner,
                 "note": "",
@@ -355,6 +446,7 @@ def record(
             waiting=waiting,
             verdict_acked=None,
             review=review,
+            pushes=pushes,
             state_ask=chase and not brief,
             tool_use_id=tool_use_id or hit.get("tool_use_id", ""),
             head_moved=None,
@@ -430,6 +522,7 @@ def from_tool(
         bool(DELIVERABLE.search(text)),
         queue,
         queued_behind(text, summary),
+        pushes_to_pr(cfg, text, summary) and not chase,
     )
 
 
@@ -596,6 +689,7 @@ def alerts(cfg: dict, now: float) -> list[dict]:
 
 
 def block_lines(cfg: dict, work: list[dict], now: float) -> list[str]:
+    """Status-block lines for routed work: owner, age, last heard and the NEXT action."""
     mine = [i for i in work if i.get("kind") == "routed"]
     if not mine:
         return []
@@ -637,6 +731,11 @@ def heard(cfg: dict, events: list[tuple[float, str, str]]) -> int:
                     i["owner"] in text
                     or bool(i.get("tool_use_id") and i["tool_use_id"] in text)
                 )
+                if by_text and COMPLETED.search(text) and ts > (i.get("routed_at") or i["added"]):
+                    i["reported"] = ts  # the agent finished after this ask and reported
+                    if not i.get("review"):  # a review item stays: the review check on the PR decides
+                        i["answered"] = True
+                        i["done_note"] = "agent completed (task notification)"
                 if (name.lower() == i["owner"].lower() or by_text) and ts > (
                     i.get("last_heard") or 0
                 ):
@@ -645,14 +744,18 @@ def heard(cfg: dict, events: list[tuple[float, str, str]]) -> int:
                     if i.get("state_ask") and ts > (i.get("routed_at") or 0):
                         i["answered"] = True  # a state question is answered by one reply
         for i in [x for x in all_ if x.get("answered")]:
-            _archive(cfg, i, "state question answered", time.time())
+            _archive(cfg, i, i.get("done_note") or "state question answered", time.time())
             all_.remove(i)
         if n:
             work_save(sd, all_)
     return n
 
 
+COMPLETED = re.compile(r"<status>\s*completed\s*</status>")
+
+
 def peer_name(text: str) -> str:
+    """Name of the peer a message came from, or an empty string."""
     m = FROM_NAME.search(text)
     return m.group(1) if m else ""
 
@@ -719,6 +822,7 @@ def scan_transcript(cfg: dict, path: str | Path | None) -> int:
 
 
 def transcript_of(cfg: dict, session_id: str) -> str | None:
+    """Path of the transcript file for a session id, or None."""
     for f in glob.glob(os.path.expanduser(cfg["paths"]["transcripts_glob"])):
         if os.path.basename(f) == f"{session_id}.jsonl":
             return f
@@ -741,7 +845,6 @@ def _landed(
 ) -> dict[str, tuple[str, dict | None]]:
     """Per PR of a review item: ('closed'|'old'|'', detail). The newest review since the ask, from someone but the
     author, judged against that PR's current head."""
-    need = opts(cfg)["reviewer_logins"]
     out: dict[str, tuple[str, dict | None]] = {}
     for u in item["prs"]:
         info = got.get(u)
@@ -749,8 +852,7 @@ def _landed(
             r
             for r in (info["reviews"] if info else [])
             if r["at"] >= (item.get("routed_at") or item["added"])
-            and r["login"] != info["author"]
-            and (not need or r["login"] in need)
+            and counts_as_review(cfg, r, info)
         ] if info else []
         if not info or not revs:
             out[u] = ("", None)
@@ -839,7 +941,10 @@ def resolve_bare_refs(cfg: dict) -> None:
     repo = str(opts(cfg).get("repo", ""))
     if not repo:
         return
-    fix = lambda u: u if u.startswith("http") else f"https://github.com/{repo}/pull/{pr_num(u)}"
+
+    def fix(u: str) -> str:
+        return u if u.startswith("http") else f"https://github.com/{repo}/pull/{pr_num(u)}"
+
     sd = store.state(cfg)
     with store.locked(sd / "work.lock"):
         all_ = work_load(sd)
@@ -884,6 +989,8 @@ def refresh_prs(cfg: dict, now: float) -> list[dict]:
                 elif owner_is_author(cfg, i["owner"], info["author"]):
                     i["review"] = False  # the person asked wrote the PR: their pushes are the work, not a stale review
                     i["heads"][u] = info["head"]
+                elif i.get("pushes") and not i.get("review"):
+                    i["heads"][u] = info["head"]  # the owner was asked to push to this PR: its pushes are the work
                 elif not same_head(old, info["head"]):
                     i["head_moved"] = {
                         "url": u,

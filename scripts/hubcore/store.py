@@ -9,7 +9,9 @@ import os
 import re
 import time
 import unicodedata
+from collections.abc import Iterator
 from datetime import datetime
+from datetime import tzinfo as TzInfo
 from pathlib import Path
 
 from . import config
@@ -66,6 +68,7 @@ def _inside_git(path: Path) -> bool:
 
 
 def state(cfg: dict, create: bool = True) -> Path:
+    """The state directory (created on demand); refuses one inside a git repository or the skill dir."""
     d = config.state_dir(cfg)
     if d.resolve().is_relative_to(config.SKILL_DIR):
         raise StateError(f"state dir {d} is inside the skill dir")
@@ -77,7 +80,8 @@ def state(cfg: dict, create: bool = True) -> Path:
     return d
 
 
-def tzinfo(cfg: dict):
+def tzinfo(cfg: dict) -> TzInfo | None:
+    """The configured timezone, else the system one."""
     name = cfg["user"].get("timezone", "")
     if name:
         from zoneinfo import ZoneInfo
@@ -87,10 +91,12 @@ def tzinfo(cfg: dict):
 
 
 def day_of(cfg: dict, epoch: float) -> str:
+    """YYYY-MM-DD of an epoch in the configured timezone."""
     return datetime.fromtimestamp(epoch, tzinfo(cfg)).strftime("%Y-%m-%d")
 
 
 def clock(cfg: dict, epoch: float) -> str:
+    """HH:MM of an epoch in the configured timezone."""
     return datetime.fromtimestamp(epoch, tzinfo(cfg)).strftime("%H:%M")
 
 
@@ -128,12 +134,12 @@ def read_rows(path: Path) -> tuple[list[dict], int]:
 
 
 @contextlib.contextmanager
-def locked(path: Path, blocking: bool = True, retries: int = 3):
+def locked(path: Path, blocking: bool = True, retries: int = 3) -> Iterator[bool]:
     """flock on a lock file. Yields True when held. Non-blocking mode retries then yields False."""
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     got = False
     try:
-        for i in range(retries if not blocking else 1):
+        for _ in range(retries if not blocking else 1):
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
                 got = True
@@ -146,12 +152,13 @@ def locked(path: Path, blocking: bool = True, retries: int = 3):
 
 
 def write_atomic(path: Path, text: str) -> None:
+    """Write text via a temp file and rename."""
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
 
 
-def write_json_atomic(path: Path, obj, indent: int | None = 1) -> None:
+def write_json_atomic(path: Path, obj: object, indent: int | None = 1) -> None:
     """Redact every string, then write atomically (status.json, work.json)."""
     write_atomic(path, json.dumps(redact_obj(obj, 2000), indent=indent, ensure_ascii=False) + "\n")
 
@@ -164,5 +171,6 @@ def safe(text: str, n: int = 300) -> str:
 
 
 def touch_seen(sd: Path, name: str) -> None:
+    """Touch a heartbeat file under seen/."""
     (sd / "seen").mkdir(exist_ok=True)
     (sd / "seen" / name).touch()

@@ -17,6 +17,7 @@ from hubcore import config, learnings  # noqa: E402
 
 
 def main() -> int:
+    """Run one learn.py verb. Returns the exit code."""
     p = argparse.ArgumentParser(description="Hub learnings log")
     p.add_argument("--file", help="learnings file (default: from config)")
     sub = p.add_subparsers(dest="cmd", required=True)

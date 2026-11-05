@@ -6,6 +6,7 @@ import glob
 import importlib.util
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -13,8 +14,8 @@ import time
 from pathlib import Path
 
 from . import config, learnings, store
-from .redact import redact
 from .orders import Orders
+from .redact import redact
 
 VERSION = 1
 WORK_KINDS = ("active", "tracked", "priority", "routed", "ask")
@@ -25,23 +26,38 @@ MAX_BLOCK_LINES = 25
 # ---- live work file: only live items; finished items move to archive_<day> ----
 
 def work_path(sd: Path) -> Path:
+    """File holding live work items."""
     return sd / "work.json"
 
 
 def work_load(sd: Path) -> list[dict]:
+    """Live work items from the state dir."""
     p = work_path(sd)
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
 
 
 def work_save(sd: Path, items: list[dict]) -> None:
+    """Write live work items atomically."""
     store.write_json_atomic(work_path(sd), items)
 
 
-def next_work_id(items: list[dict]) -> str:
-    return "W" + str(max([int(i["id"][1:]) for i in items] + [0]) + 1)
+def next_work_id(sd: Path, items: list[dict]) -> str:
+    """The next work id (W1, W2, ...). Ids are never reused: the highest id ever issued is kept in `work.seq`
+    (first seeded from the live items and the archive), so an archived item's id does not come back for another job.
+    Call it under the work lock."""
+    seq = sd / "work.seq"
+    try:
+        last = int(seq.read_text().strip())
+    except ValueError, OSError:
+        archived = [r.get("id", "") for f in (sd / "archive").glob("archive_*.jsonl") for r in store.read_rows(f)[0] if r.get("type") == "work"]
+        last = max([int(x[1:]) for x in archived if re.fullmatch(r"W\d+", str(x))] + [0])
+    nxt = max([int(i["id"][1:]) for i in items] + [last]) + 1
+    store.write_atomic(seq, str(nxt))
+    return f"W{nxt}"
 
 
 def work_add(cfg: dict, kind: str, title: str, owner: str = "", note: str = "") -> dict:
+    """Add a live work item and return it."""
     from .redact import redact_obj
 
     if kind not in WORK_KINDS:
@@ -49,7 +65,7 @@ def work_add(cfg: dict, kind: str, title: str, owner: str = "", note: str = "") 
     sd = store.state(cfg)
     with store.locked(sd / "work.lock"):
         items = work_load(sd)
-        item = redact_obj({"id": next_work_id(items), "kind": kind, "title": title, "owner": owner,
+        item = redact_obj({"id": next_work_id(sd, items), "kind": kind, "title": title, "owner": owner,
                            "note": note, "added": time.time()})
         items.append(item)
         work_save(sd, items)
@@ -57,6 +73,7 @@ def work_add(cfg: dict, kind: str, title: str, owner: str = "", note: str = "") 
 
 
 def work_done(cfg: dict, wid: str, note: str = "") -> str:
+    """Archive a work item with a note; returns a confirmation line."""
     sd = store.state(cfg)
     with store.locked(sd / "work.lock"):
         items = work_load(sd)
@@ -106,7 +123,8 @@ def mep_state(cfg: dict, prev: dict | None = None) -> dict:
         if prev and prev.get("state") in ("ok", "stale"):
             return {**prev, "state": "stale", "why": type(e).__name__,
                     "good_at": prev.get("good_at", prev.get("at", time.time()))}
-        return {"state": "UNVERIFIED", "why": type(e).__name__}
+        why = "mep CLI not found; it is optional, set [mep] enabled = false in config.toml" if exe is None else type(e).__name__
+        return {"state": "UNVERIFIED", "why": why}
     return {"state": "ok", "count": len(titles), "titles": titles[:5], "good_at": time.time()}
 
 
@@ -145,10 +163,13 @@ def hook_errors(cfg: dict) -> dict:
 
 
 def extensions(cfg: dict) -> list:
+    """Load the user's ext/*.py modules; a broken one is logged and skipped."""
     d = config.path_of(cfg, "extensions_dir", Path(cfg["_config_dir"]) / "ext")
     mods = []
     for f in sorted(d.glob("*.py")) if d.is_dir() else []:
         spec = importlib.util.spec_from_file_location(f"hubkit_ext_{f.stem}", f)
+        if spec is None or spec.loader is None:
+            continue
         mod = importlib.util.module_from_spec(spec)
         try:
             spec.loader.exec_module(mod)
@@ -163,7 +184,6 @@ def extensions(cfg: dict) -> list:
 
 def block_learnings(cfg: dict, lpath: Path) -> list[dict]:
     """Learnings for the block: seen in the last 30 days, 5 at most; addressed ones are on probation 14 days."""
-    today = store.day_of(cfg, time.time())
     now = time.time()
     out = []
     for b in learnings.recent(lpath, 40):
@@ -182,6 +202,7 @@ def block_learnings(cfg: dict, lpath: Path) -> list[dict]:
 
 
 def build_status(cfg: dict) -> dict:
+    """Assemble the status document: work, orders, mep, learnings, hook errors."""
     sd = store.state(cfg)
     orders = Orders(cfg)
     lpath = learnings.default_file(cfg)
@@ -202,6 +223,7 @@ def build_status(cfg: dict) -> dict:
 
 
 def write_status(cfg: dict) -> dict:
+    """Build status.json, write it and return it."""
     sd = store.state(cfg)
     st = build_status(cfg)
     store.write_json_atomic(sd / "status.json", st)
@@ -209,6 +231,7 @@ def write_status(cfg: dict) -> dict:
 
 
 def read_status(cfg: dict) -> dict | None:
+    """The last status.json, or None."""
     p = store.state(cfg, create=False) / "status.json"
     try:
         return json.loads(p.read_text(encoding="utf-8"))
@@ -217,6 +240,7 @@ def read_status(cfg: dict) -> dict | None:
 
 
 def render_block(cfg: dict, orders: Orders, st: dict | None, now: float | None = None) -> str:
+    """The text block printed at session start and with each prompt."""
     now = now or time.time()
     out = [f"hubkit: you are the {cfg['hub']['name']} session for {cfg['user']['name']}. "
            "Re-read the hub SKILL.md and the overlay before acting."]
@@ -262,10 +286,12 @@ def _gap(n: int) -> float:
 
 
 def held_rows(orders: Orders, oid: str) -> list[dict]:
+    """Ledger `hold` rows for an order."""
     return [r for r in store.read_rows(orders.path)[0] if r.get("id") == oid and r.get("op") == "hold"]
 
 
 def evaluate(cfg: dict, orders: Orders, hook_err: dict, now: float) -> list[dict]:
+    """Watchdog conditions that hold now, as alert dicts."""
     found: list[dict] = []
     ttl = float(orders.intents.get("intake", {}).get("unconfirmed_ttl_min", 30))
     held_max = float(orders.intents.get("intake", {}).get("held_review_min", 120))
@@ -396,6 +422,7 @@ def _watch_loop(cfg: dict, interval: float, max_cycles: int) -> int:
 # ---- EOD ----
 
 def glance(cfg: dict, day: str) -> list[str]:
+    """The day-at-a-glance lines of the end-of-day review."""
     sd = store.state(cfg)
     orders = Orders(cfg)
     arch = store.read_rows(sd / "archive" / f"archive_{day}.jsonl")[0]
@@ -444,6 +471,7 @@ LIVE = ("open", "unconfirmed", "held")  # expired orders are finished
 
 
 def eod(cfg: dict, day: str, note: str = "") -> Path:
+    """Write and return the end-of-day review file for `day`."""
     sd = store.state(cfg)
     Orders(cfg).repair_archive()
     body = glance(cfg, day) + [""] + reflection(cfg, day)

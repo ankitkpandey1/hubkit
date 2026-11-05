@@ -28,7 +28,7 @@ Brief quality
 
 Parallelism
 - [A1] Launch independent workers in parallel, not in series. This cut research time by up to 90%.
-- House cap (user rule): at most 4 at once, Haiku/Sonnet only.
+- A cap on parallel agents and a model-tier ceiling are the user's rules; keep them in the overlay.
 
 Verification by a separate judge
 - [A2] Evaluator-optimizer: one model produces, another evaluates against clear criteria. Ground truth comes from the environment (tool results), not from the agent's own claim.
@@ -46,4 +46,4 @@ Stop conditions and human checkpoints
 Learning loops and memory
 - [A1] Start evaluating at once with ~20 real cases. Prompt changes were the main lever. Trace decision patterns, not every transcript.
 - [A1] Persist the plan. [A2] Test tools with real inputs and fix the mistakes the model makes (poka-yoke).
-- Applied here: every user correction becomes a learnings entry tied to a gate check. A class seen twice is promoted into the gate. See SKILL.md section 8.
+- Applied here: every user correction becomes a learnings entry tied to a gate check. A class seen twice is promoted into the gate. See SKILL.md section 9.

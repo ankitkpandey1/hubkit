@@ -6,7 +6,8 @@ Guidance for an agent changing hubkit. Read `README.md` for what it does and `SK
 
 ```
 SKILL.md                  behaviour contract for the hub session (keep under ~200 lines)
-README.md                 operator view
+README.md                 operator view          docs/  architecture, configuration, commands, troubleshooting
+LICENSE (Apache-2.0)      pyproject.toml  ruff, mypy, pytest settings    .github/workflows/ci.yml
 config.example.toml       generic config template   intents.example.toml   generic intents
 references/               design notes
 scripts/hubkit            entry point (hooks never raise; an import failure is logged and exits 0)
@@ -31,6 +32,7 @@ tests/run_reverts.py      revert proof
 
 ```
 python3 -m pytest tests -q
+ruff check . && mypy scripts/hubcore scripts/learn.py scripts/hubkit
 python3 tests/run_reverts.py          # slow (minutes), prints one line per entry, exits 0 only if all are OK
 python3 scripts/hubkit doctor --check-clean
 ```
@@ -44,7 +46,7 @@ Use the scratch state the `env` fixture gives. For a manual run set `HUBKIT_STAT
 - Hooks always exit 0 and print nothing outside the bound hub. Fail loud inside the logic, not silently in the hook.
 - Config keys have defaults in `config.py` `DEFAULTS`; add new keys there and in `config.example.toml`.
 - Python 3.14; `except A, B:` without parentheses is the required form. Type annotations on functions; stdlib only.
-- Keep `SKILL.md` and `README.md` true: when a behaviour or verb changes, change them in the same edit, and check every command and path you write against the code.
+- Keep `SKILL.md`, `README.md` and `docs/` true: when a behaviour or verb changes, change them in the same edit, and check every command and path you write against the code.
 
 ## No personal data in this directory
 

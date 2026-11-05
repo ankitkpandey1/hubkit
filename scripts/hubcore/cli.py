@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
+import subprocess
 import sys
 import time
 from pathlib import Path
 
-from . import config, hooks, learnings, routed, status, store
+from . import config, hooks, routed, status, store
 from .orders import Orders
 from .redact import count_hits_text
 
 
 def kv(pairs: list[str]) -> dict[str, str]:
+    """Parse repeated NAME=VALUE arguments into a dict."""
     out = {}
     for p in pairs or []:
         k, _, v = p.partition("=")
@@ -23,6 +24,7 @@ def kv(pairs: list[str]) -> dict[str, str]:
 
 
 def cmd_order(a, cfg: dict) -> int:
+    """Run an `order` verb; exit 2 with a message on an unknown id or refused action."""
     o = Orders(cfg)
     act = a.action
     try:
@@ -57,6 +59,7 @@ def cmd_order(a, cfg: dict) -> int:
 
 
 def cmd_work(a, cfg: dict) -> int:
+    """Run a `work` verb (add, done, ls)."""
     try:
         if a.action == "add" and a.kind == "routed":
             if not (a.owner and a.title):
@@ -77,7 +80,30 @@ def cmd_work(a, cfg: dict) -> int:
     return 0
 
 
+def cron_configured() -> bool:
+    """True when the user's crontab holds an active line that runs hubkit (`crontab -l` unreadable counts as none)."""
+    try:
+        out = subprocess.run(["crontab", "-l"], capture_output=True, text=True, timeout=5, check=False).stdout
+    except OSError, subprocess.SubprocessError:
+        return False
+    return any("hubkit" in x and not x.lstrip().startswith("#") for x in out.splitlines())
+
+
+def cron_line(cfg: dict, sd: Path) -> str:
+    """The `cron:` doctor line. When cron is configured, a `seen/cron` older than `watchdog.cron_stale_min` (or
+    never written) is flagged: every tick run touches it first, so a stale one means cron is not running hubkit."""
+    f = sd / "seen" / "cron"
+    if not cron_configured():
+        return "cron: no hubkit line in the crontab"
+    age = (time.time() - f.stat().st_mtime) / 60 if f.exists() else None
+    if age is None or age > float(cfg["watchdog"]["cron_stale_min"]):
+        shown = "never ran" if age is None else f"last ran {int(age)} min ago"
+        return f"cron: STALE: a hubkit crontab line exists but {shown} (limit {cfg['watchdog']['cron_stale_min']} min); check cron's mail and that the line runs"
+    return "cron: ok"
+
+
 def cmd_doctor(a, cfg: dict) -> int:
+    """Print config, bind, hook heartbeat and state health; exit 1 on secret-shaped strings or private terms."""
     sd = store.state(cfg)
     problems = 0
     print(f"config: {cfg['_config_path']} ({'found' if Path(cfg['_config_path']).exists() else 'defaults'})")
@@ -87,6 +113,7 @@ def cmd_doctor(a, cfg: dict) -> int:
     for name in ("session", "prompt", "answer", "routed", "stop", "tick", "cron"):
         f = sd / "seen" / name
         print(f"seen/{name}: {int((time.time() - f.stat().st_mtime) / 60)} min ago" if f.exists() else f"seen/{name}: never")
+    print(cron_line(cfg, sd))
     rows, bad = store.read_rows(sd / "orders.jsonl")
     print(f"orders.jsonl: {len(rows)} rows, {bad} bad lines")
     errs = store.read_rows(sd / "hook-errors.jsonl")[0]
@@ -99,8 +126,8 @@ def cmd_doctor(a, cfg: dict) -> int:
         terms = [t.lower() for t in cfg["private"]["terms"]]
         dirty = []
         for p in config.SKILL_DIR.rglob("*"):
-            if p.is_file() and "__pycache__" not in p.parts and ".pytest_cache" not in p.parts \
-                    and p.suffix in (".py", ".md", ".toml", ".txt", ".gitignore", ""):
+            if p.is_file() and not {"__pycache__", ".pytest_cache", ".git"} & set(p.relative_to(config.SKILL_DIR).parts) \
+                    and p.suffix in (".py", ".md", ".toml", ".txt", ".yml", ".yaml", ".gitignore", ""):
                 low = p.read_text(errors="replace").lower()
                 dirty += [str(p.relative_to(config.SKILL_DIR)) for t in terms if t and t in low]
         print(f"private terms in skill files (names only, no matches shown): {sorted(set(dirty)) or 'none'} [{len(terms)} terms]")
@@ -109,6 +136,7 @@ def cmd_doctor(a, cfg: dict) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Parse argv and dispatch one verb. Returns the process exit code."""
     p = argparse.ArgumentParser(prog="hubkit")
     sub = p.add_subparsers(dest="cmd", required=True)
 

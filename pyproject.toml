@@ -1,0 +1,35 @@
+[project]
+name = "hubkit"
+version = "0.1.0"
+description = "Order clocks, routed-work tracking, a watchdog and a stop gate for a coordinating Claude Code session that learns from its user's corrections."
+readme = "README.md"
+requires-python = ">=3.14"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Ankit Kumar Pandey" }]
+keywords = ["claude-code", "agents", "orchestration", "hooks", "adaptive"]
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/ankitkpandey1/hubkit"
+
+[tool.ruff]
+line-length = 140
+target-version = "py314"
+src = ["scripts"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
+
+[tool.mypy]
+python_version = "3.14"
+mypy_path = "scripts"
+explicit_package_bases = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+parallel = true
+source = ["scripts"]

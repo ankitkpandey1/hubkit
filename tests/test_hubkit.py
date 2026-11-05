@@ -1,6 +1,5 @@
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -191,7 +190,7 @@ def test_stop_loss_after_repeated_chases(env):
     env.bind()
     env.prompt(HOTFIX)
     out = ""
-    for i in range(3):
+    for _ in range(3):
         env.backdate(2)
         out = env.prompt("what is the hold up?").stdout
     assert "STOP-LOSS" in out and "chased 3 times" in out
@@ -783,6 +782,8 @@ def test_mep_found_with_cron_style_path(env):
         pytest.skip("no mep installed")
     env.cfg.write_text(env.cfg.read_text().replace("enabled=false", "enabled=true"))
     bindir = str(Path(real).parent)
+    if bindir not in [os.path.expanduser(d) for d in ("~/.local/bin", "/usr/local/bin", "~/bin")]:
+        pytest.skip("mep is not in a directory the cron-PATH fallback searches under this HOME")
     minimal = os.pathsep.join(p for p in ("/usr/bin", "/bin") if p != bindir)
     r = env.run("tick", "--no-notify", PATH=minimal)
     assert r.returncode == 0
@@ -1194,8 +1195,8 @@ def set_gh_raw(env, head, reviews=None, author="pr-author"):
     (env.root / "gh.json").write_text(json.dumps({"headRefOid": head, "author": {"login": author}, "reviews": reviews or []}))
 
 
-def review(commit, state="APPROVED", login="rev-er", at=None):
-    return {"submittedAt": iso(at or time.time() + 5), "state": state, "commit": {"oid": commit}, "author": {"login": login}}
+def review(commit, state="APPROVED", login="rev-er", at=None, body=""):
+    return {"submittedAt": iso(at or time.time() + 5), "state": state, "commit": {"oid": commit}, "author": {"login": login}, "body": body}
 
 
 def queue_line(content, ts):
@@ -1220,7 +1221,7 @@ def test_agent_completion_still_queued_marks_heard(env):
                         "tool_response": {"agentId": "agent123", "status": "async_launched"}})
     age_routed(env, 40)
     tr = env.transcripts / "sess-hub.jsonl"
-    tr.write_text(queue_line("<task-notification>\n<task-id>agent123</task-id>\n<status>completed</status>\n</task-notification>", iso(time.time() - 30)) + "\n")
+    tr.write_text(queue_line("<task-notification>\n<task-id>agent123</task-id>\n<status>running</status>\n</task-notification>", iso(time.time() - 30)) + "\n")
     env.hook("prompt", {"session_id": "sess-hub", "prompt": "carry on", "transcript_path": str(tr)})
     assert routed_items(env)[0]["last_heard"]
 
@@ -1260,8 +1261,8 @@ def test_one_owner_gets_one_chase_line_whatever_the_item_count(env):
     send(env, "peer-a", "check https://github.com/acme/repo/pull/102")
     send(env, "peer-b", "check https://github.com/acme/repo/pull/103")
     age_routed(env, 20)
-    lines = [l for l in env.prompt("carry on").stdout.splitlines() if l.startswith("hubkit STALLED")]
-    assert len(lines) == 2 and sum("peer-a" in l for l in lines) == 1  # one for peer-a (two items), one for peer-b
+    lines = [ln for ln in env.prompt("carry on").stdout.splitlines() if ln.startswith("hubkit STALLED")]
+    assert len(lines) == 2 and sum("peer-a" in ln for ln in lines) == 1  # one for peer-a (two items), one for peer-b
     assert "#101" in lines[0] and "#102" in lines[0]
 
 
@@ -1444,7 +1445,7 @@ def test_a_chased_item_neither_alerts_nor_wakes_the_watch_again(env):
     send(env, "peer-a", "Status on #101?")  # chased at this step
     age_routed(env, 9)  # 29 min of silence: still the chased step
     p = env.state / "alerts.jsonl"
-    rows = [json.loads(l) for l in p.read_text().splitlines()]
+    rows = [json.loads(ln) for ln in p.read_text().splitlines()]
     p.write_text("".join(json.dumps({**r, "ts": r["ts"] - 700}) + "\n" for r in rows))  # the 10-minute back-off has passed
     assert env.run("tick", "--no-notify").stdout == ""
     r = env.run("watch", "--interval", "1", "--max-cycles", "2", timeout=30)
@@ -1652,7 +1653,7 @@ def test_every_stop_block_names_a_concrete_action(env):
     age_routed(env, 20)
     r = stop(env, last_assistant_message="#101 is approved. Shall I merge it?")
     lines = r["reason"].splitlines()
-    assert len(lines) >= 3 and all("NEXT:" in l for l in lines), lines
+    assert len(lines) >= 3 and all("NEXT:" in ln for ln in lines), lines
 
 
 def test_an_old_head_verdict_blocks_once_and_a_chase_clears_it_for_good(env):
@@ -1757,8 +1758,8 @@ def test_an_owner_found_to_be_the_author_later_loses_the_review_tag(env):
 
 
 def test_agents_have_no_login_and_are_never_the_author(env, monkeypatch):
-    from hubcore.routed import owner_is_author
     from hubcore import config
+    from hubcore.routed import owner_is_author
     for k, v in env.env().items():
         monkeypatch.setenv(k, v)
     cfg = config.load()
@@ -1779,7 +1780,7 @@ def test_eta_next_names_the_open_prs_not_the_first_one(env):
     d[0]["last_heard"] = time.time() - 60
     (env.state / "work.json").write_text(json.dumps(d))
     out = env.prompt("carry on").stdout
-    assert f"ETA on #101 #102" in out
+    assert "ETA on #101 #102" in out
     (env.root / "gh").write_text(f'#!/bin/sh\ncase "$3" in *101) cat {env.root}/g101.json;; *) cat {env.root}/g102.json;; esac\n')
     (env.root / "g101.json").write_text(json.dumps({"headRefOid": SHA_A, "author": {"login": "x"}, "reviews": [review(SHA_A)]}))
     (env.root / "g102.json").write_text(json.dumps({"headRefOid": SHA_B, "author": {"login": "x"}, "reviews": []}))
@@ -1835,7 +1836,7 @@ def reply_from(env, name, minutes_ago=0):
 def test_a_state_ask_is_not_a_review_and_the_owners_reply_closes_it(env):
     fake_gh(env, head=SHA_A)
     env.bind()
-    send(env, "peer-sdk", f"One-line state of the review on {PR1}, then carry on.", "Ask for a one-line state")
+    send(env, "peer-sdk", f"One-line state on {PR1}: are you still reviewing it? Then carry on.", "Ask for a one-line state")
     (item,) = routed_items(env)
     assert item["review"] is False and item["state_ask"] is True
     reply_from(env, "peer-sdk")
@@ -1855,3 +1856,349 @@ def test_an_action_on_a_pr_or_a_brief_marker_is_never_a_chase(env):
     assert is_chase(cfg, f"status of {PR1}?")
     assert not is_chase(cfg, "Report back with the numbers. Output: a table")
     assert not is_chase(cfg, f"Review {PR1} and report back")
+
+
+# ---- 12. open-source readiness: entry point, doctor scan, learning loop CLI, mep message ----
+
+def _add_learning(env, cls, day):
+    r = env.learn("add", "--class", cls, "--gate", "G1", "--quote", "q", "--date", day,
+                  "--situation", "s", "--wrong", "w", "--right", "r", "--evidence", "e")
+    assert r.returncode == 0, r.stderr
+
+
+def test_promote_candidates_lists_only_repeated_classes(env):
+    _add_learning(env, "repeat-me", "2026-01-01")
+    _add_learning(env, "repeat-me", "2026-01-02")
+    _add_learning(env, "once-only", "2026-01-02")
+    out = env.learn("promote-candidates").stdout
+    assert "2x  repeat-me  (gate G1)" in out and "once-only" not in out
+    assert "none seen >= 3x" in env.learn("promote-candidates", "--min", "3").stdout
+
+
+def test_review_reports_new_and_repeated_for_a_day(env):
+    _add_learning(env, "repeat-me", "2026-01-01")
+    _add_learning(env, "repeat-me", "2026-01-02")
+    _add_learning(env, "fresh", "2026-01-02")
+    out = env.learn("review", "--day", "2026-01-02").stdout
+    assert "new: fresh" in out and "repeated: repeat-me" in out and "unaddressed: repeat-me (2x)" in out
+
+
+def test_learn_address_unknown_class_fails_loud(env):
+    r = env.learn("address", "--class", "never-recorded", "--how", "x")
+    assert r.returncode == 2 and r.stderr.startswith("error:")
+
+
+def test_hook_exits_zero_and_logs_when_hubcore_cannot_import(env, tmp_path):
+    """A real broken install: the entry point copied next to a hubcore whose import fails."""
+    bad = tmp_path / "bad-scripts"
+    (bad / "hubcore").mkdir(parents=True)
+    shutil.copy(SCRIPTS / "hubkit", bad / "hubkit")
+    (bad / "hubcore" / "__init__.py").write_text("")
+    (bad / "hubcore" / "cli.py").write_text("raise ImportError('broken install')\n")
+    hook = subprocess.run([sys.executable, str(bad / "hubkit"), "hook", "session"], input="{}",
+                          capture_output=True, text=True, env=env.env(), timeout=20)
+    assert hook.returncode == 0 and hook.stdout == ""
+    assert "ImportError" in (env.state / "import-errors.log").read_text()
+    cli = subprocess.run([sys.executable, str(bad / "hubkit"), "status"], capture_output=True, text=True,
+                         env=env.env(), timeout=20)
+    assert cli.returncode != 0 and "broken install" in cli.stderr
+
+
+def _skill_copy(env, tmp_path) -> Path:
+    skill = tmp_path / "skill"
+    shutil.copytree(SCRIPTS, skill / "scripts", ignore=shutil.ignore_patterns("__pycache__"))
+    return skill
+
+
+def test_check_clean_names_the_file_but_ignores_dot_git(env, tmp_path):
+    skill = _skill_copy(env, tmp_path)
+    (skill / ".git").mkdir()
+    (skill / ".git" / "config").write_text("zebrafruit remote\n")
+    env.cfg.write_text(env.cfg.read_text() + '[private]\nterms=["zebrafruit"]\n')
+    def run():
+        return subprocess.run([sys.executable, str(skill / "scripts" / "hubkit"), "doctor", "--check-clean"],
+                              capture_output=True, text=True, env=env.env(), timeout=20)
+    assert run().returncode == 0
+    (skill / "notes.md").write_text("mentions ZebraFruit\n")
+    r = run()
+    assert r.returncode == 1 and "notes.md" in r.stdout and "zebrafruit" not in r.stdout.lower()
+
+
+def test_mep_missing_says_how_to_turn_it_off(env):
+    env.cfg.write_text(env.cfg.read_text().replace("enabled=false", 'enabled=true\n[tools]\nmep="/nonexistent/mep"'))
+    block = env.run("status").stdout
+    assert "mep: UNVERIFIED" in block and "[mep] enabled = false" in block
+
+
+# ---- audited bugs of 11-05 ----
+
+def user_login(env, login):
+    import re
+
+    text = re.sub(r'\ngithub_login="[^"]*"', "", env.cfg.read_text())
+    env.cfg.write_text(text.replace('name="Tester"', f'name="Tester"\ngithub_login="{login}"'))
+
+
+def verdict_blocked(r, n="101"):
+    return bool(r) and f"verdict on #{n}" in r["reason"]
+
+
+def test_a_comment_at_the_head_closes_a_review_item_on_the_hub_users_own_pr(env):
+    fake_gh(env, head="aaa1111")
+    user_login(env, "pr-author")
+    env.bind()
+    send(env, "peer-a", f"Full gated review of {PR1}", "review 101")
+    set_gh_raw(env, "aaa1111", [review("aaa1111", "COMMENTED", login="pr-author", body="Findings: none blocking.")])
+    env.run("tick", "--no-notify")
+    assert routed_items(env) == []
+
+
+def test_the_stop_gate_accepts_a_comment_at_the_head_on_the_hub_users_own_pr_only(env):
+    fake_gh(env, head="aaa1111")
+    env.bind()
+    send(env, "peer-a", f"Full gated review of {PR1}", "review 101")
+    set_gh_raw(env, "aaa1111", [review("aaa1111", "COMMENTED", login="pr-author", body="Findings: none blocking.")])
+    said = "#101 is approved, merge it."
+    assert verdict_blocked(stop(env, last_assistant_message=said))  # not the hub user's PR: today's rule
+    user_login(env, "someone-else")
+    assert verdict_blocked(stop(env, last_assistant_message=said))
+    user_login(env, "pr-author")
+    assert not verdict_blocked(stop(env, last_assistant_message=said))
+    set_gh_raw(env, "aaa1111", [review("zzz9999", "COMMENTED", login="pr-author", body="Findings: none blocking.")])
+    assert verdict_blocked(stop(env, last_assistant_message=said))  # a comment on an older head proves nothing
+
+
+def test_a_comment_at_the_head_advances_a_queue_on_the_hub_users_own_pr(env):
+    fake_gh(env, head="aaa1111")
+    user_login(env, "pr-author")
+    env.bind()
+    send(env, "peer-a", f"Review {PR1} then {PR2}. Done-when: verdicts.", "review 101 and 102")
+    set_gh_raw(env, "aaa1111", [review("aaa1111", "COMMENTED", login="pr-author", body="Findings: none blocking.")])
+    out = env.run("tick", "--no-notify").stdout
+    item = routed_items(env)[0]
+    assert "clock restarts on the next PR" in out
+    assert [pr.rsplit("/", 1)[-1] for pr in item["prs"]] == ["102"]
+
+
+PR2 = "https://github.com/acme/repo/pull/102"
+
+
+def test_a_fix_brief_that_mentions_a_review_is_not_a_review_item(env):
+    env.bind()
+    send(env, "peer-a", f"Fix the findings Dana left in his review of {PR1}. Done-when: tests pass.", "fix 101 findings")
+    send(env, "peer-b", f"Address the review comments on {PR2} and push. Done-when: tests pass.", "address comments")
+    assert [i["review"] for i in routed_items(env)] == [False, False]
+    age_routed(env, 12)
+    assert "OVERDUE" not in env.prompt("carry on").stdout
+    send(env, "peer-c", f"Review {PR1}, then say what to fix. Done-when: a verdict.", "review 101")
+    assert routed_items(env)[-1]["review"] is True
+
+
+def test_a_head_move_by_the_owner_fixing_the_pr_raises_no_alert_but_a_review_item_still_does(env):
+    fake_gh(env, head="aaa1111")
+    env.bind()
+    set_gh_raw(env, "aaa1111", [], author="repo-owner")
+    send(env, "fixer-ea", f"Fix the findings on {PR1}. Done-when: tests pass.", "fix 101")
+    send(env, "reviewer-eb", f"Full gated review of {PR2}", "review 102")
+    set_gh_raw(env, "bbb2222", [], author="repo-owner")
+    out = env.run("tick", "--no-notify").stdout
+    assert "reviewer-eb" in out and "head moved" in out
+    assert "fixer-ea" not in out
+    fixer = next(i for i in routed_items(env) if i["owner"] == "fixer-ea")
+    assert not fixer.get("head_moved") and list(fixer["heads"].values()) == ["bbb2222"]
+
+
+@pytest.mark.parametrize("quoted", [
+    "Example of a good verdict line: Review #555 approved at 1234abc.",
+    'Report like "Review #555 approved at 1234abc" when done.',
+    "Report like `Review #555 approved` when done.",
+    "e.g. Fix #555 and push it.",
+    "Format, for example:\nReview #555 approved at 1234abc",
+])
+def test_example_and_quoted_pr_numbers_in_a_brief_are_not_tracked(env, quoted):
+    env.bind()
+    send(env, "peer-a", f"Task: build the thing. Done-when: tests pass.\n{quoted}\n" + LONG, "build the thing")
+    item = routed_items(env)[0]
+    assert item["prs"] == [] and not item.get("queue") and item["review"] is False
+    send(env, "peer-b", f"{quoted}\nReview {PR1}. Done-when: a verdict.", "review 101")
+    assert [pr.rsplit("/", 1)[-1] for pr in routed_items(env)[1]["prs"]] == ["101"]
+
+
+def test_awaiting_wording_is_not_a_verdict_but_a_real_verdict_is_still_blocked(env):
+    fake_gh(env, head="aaa1111")
+    env.bind()
+    send(env, "peer-a", f"Full gated review of {PR1}", "review 101")
+    set_gh_raw(env, "aaa1111", [])
+    for ok in ["Waiting on the #101 verdict.", "Still waiting for a verdict on #101.", "#101: no verdict yet.",
+               "Awaiting the review verdict for #101.", "Merging #101 is pending approval."]:
+        assert not verdict_blocked(stop(env, last_assistant_message=ok)), ok
+    for bad in ["#101 is approved, merge it.", "The verdict on #101: changes requested.", "Review is done for #101.",
+                "#101 is approved, not yet merged.", "#101 approved, until the head moves", "Review of #101 is done; still need to merge."]:
+        assert verdict_blocked(stop(env, last_assistant_message=bad)), bad
+
+
+@pytest.mark.parametrize("text", [
+    "Can you merge #7418 now?",
+    "7443, send to alex? #7418 if approved then merge? what is blocked on it",
+    "Could you merge #7418 asap?",
+    "merge #7418 now?",
+])
+def test_a_question_never_opens_an_order_even_with_an_urgent_word(env, text):
+    env.bind()
+    out = env.prompt(text).stdout
+    assert order_ids(env) == []
+    assert "no order opened" in out and "hubkit order open --kind merge" in out
+
+
+def test_an_imperative_still_opens_an_order_even_after_a_question(env):
+    env.bind()
+    out = env.prompt("Did you merge it? Merge #7418 now.").stdout
+    assert len(order_ids(env)) == 1 and "no order opened" not in out
+
+
+def test_close_evidence_must_cover_every_pr_named_in_the_order(env):
+    env.bind()
+    env.prompt(f"merge {PR1} and {PR2} and #7418 now")
+    oid = order_ids(env)[0]
+    r = env.run("order", "close", oid, "--evidence", f"merged={PR1}")
+    assert r.returncode == 2 and "#102" in r.stderr and "#7418" in r.stderr and "#101" not in r.stderr
+    r = env.run("order", "close", oid, "--evidence", "merged=101 102 and PR #7418 merged")
+    assert r.returncode == 0 and "closed" in r.stdout
+
+
+def test_an_acknowledgement_that_names_a_pr_is_not_tracked_but_an_ask_that_starts_with_ok_is(env):
+    env.bind()
+    send(env, "peer-a", "Ack #399 hold", "ack 399")
+    send(env, "peer-b", "Noted, thanks for #7443 status", "note")
+    assert routed_items(env) == []
+    send(env, "peer-c", f"OK, review {PR1} please", "review 101")
+    send(env, "peer-d", "Okay, approve #7105", "approve")
+    assert [i["owner"] for i in routed_items(env)] == ["peer-c", "peer-d"]
+
+
+def test_a_completed_agent_notification_closes_its_item_so_it_never_stalls(env):
+    env.bind()
+    base = {"hook_event_name": "PostToolUse", "session_id": "sess-hub", "tool_name": "Agent", "tool_use_id": "toolu_X2"}
+    env.hook("routed", {**base, "tool_input": {"description": "fix it", "prompt": f"fix {PR1}. Output: a PR", "run_in_background": True},
+                        "tool_response": {"agentId": "agent456", "status": "async_launched"}})
+    assert len(routed_items(env)) == 1
+    tr = env.transcripts / "sess-hub.jsonl"
+    tr.write_text(queue_line("<task-notification>\n<task-id>agent456</task-id>\n<status>completed</status>\n</task-notification>", iso(time.time() + 5)) + "\n")
+    env.hook("prompt", {"session_id": "sess-hub", "prompt": "carry on", "transcript_path": str(tr)})
+    assert routed_items(env) == []
+    age_routed(env, 60)
+    assert "STALLED" not in env.prompt("carry on").stdout
+    arch = [json.loads(x) for f in (env.state / "archive").glob("*.jsonl") for x in f.read_text().splitlines()]
+    assert any(r.get("owner") == "agent456" and "completed" in r["done_note"] for r in arch)
+
+
+def test_work_ids_are_never_reused_after_an_item_is_archived(env):
+    env.bind()
+    ids = [env.run("work", "add", "--kind", "active", "--title", t).stdout.strip() for t in ("one", "two")]
+    assert ids == ["W1", "W2"]
+    assert env.run("work", "done", "W2", "--note", "finished").returncode == 0
+    assert env.run("work", "add", "--kind", "active", "--title", "three").stdout.strip() == "W3"
+
+
+def fake_crontab(env, text):
+    bin_ = env.root / "bin"
+    bin_.mkdir(exist_ok=True)
+    (env.root / "crontab.txt").write_text(text)
+    ct = bin_ / "crontab"
+    ct.write_text(f"#!/bin/sh\ncat {env.root / 'crontab.txt'}\n")
+    ct.chmod(0o755)
+    return {"PATH": f"{bin_}:{os.environ['PATH']}"}
+
+
+def test_doctor_flags_a_stale_seen_cron_only_when_cron_is_configured(env):
+    old = time.time() - 3600
+    (env.state / "seen").mkdir(parents=True)
+    (env.state / "seen" / "cron").write_text("")
+    os.utime(env.state / "seen" / "cron", (old, old))
+    cron = fake_crontab(env, "*/5 * * * * python3 ~/.claude/skills/hub/scripts/hubkit tick --if-bound\n")
+    assert "cron: STALE" in env.run("doctor", **cron).stdout
+    (env.state / "seen" / "cron").unlink()
+    assert "cron: STALE" in env.run("doctor", **cron).stdout and "never ran" in env.run("doctor", **cron).stdout
+    (env.state / "seen" / "cron").write_text("")
+    assert "cron: ok" in env.run("doctor", **cron).stdout
+    os.utime(env.state / "seen" / "cron", (old, old))
+    quiet = fake_crontab(env, "# */5 * * * * hubkit tick\n0 * * * * backup\n")
+    out = env.run("doctor", **quiet).stdout
+    assert "STALE" not in out and "no hubkit line" in out
+
+
+def test_review_asks_with_a_change_word_or_a_leading_clause_are_still_reviews(env):
+    env.bind()
+    asks = ["#7443 fixes the leak, please review", "After the release, review #7444",
+            "Please review #7445, e.g. the loader part", "Review #7446 and fix nothing yourself"]
+    for n, text in enumerate(asks):
+        send(env, f"peer-{n}", text, "ask")
+    assert [i["review"] for i in routed_items(env)] == [True] * 4
+    assert [i["prs"] for i in routed_items(env)][:3] == [["#7443"], ["#7444"], ["#7445"]]
+
+
+def test_a_completion_older_than_the_item_does_not_close_it(env):
+    env.bind()
+    base = {"hook_event_name": "PostToolUse", "session_id": "sess-hub", "tool_name": "Agent", "tool_use_id": "toolu_X3"}
+    env.hook("routed", {**base, "tool_input": {"description": "fix it", "prompt": f"fix {PR1}. Output: a PR", "run_in_background": True},
+                        "tool_response": {"agentId": "agent789", "status": "async_launched"}})
+    tr = env.transcripts / "sess-hub.jsonl"
+    done = "<task-notification>\n<task-id>agent789</task-id>\n<status>completed</status>\n</task-notification>"
+    tr.write_text(queue_line(done, iso(time.time() - 3600)) + "\n")
+    env.hook("prompt", {"session_id": "sess-hub", "prompt": "carry on", "transcript_path": str(tr)})
+    assert len(routed_items(env)) == 1
+    tr.write_text(tr.read_text() + queue_line(done, iso(time.time() + 5)) + "\n")
+    env.hook("prompt", {"session_id": "sess-hub", "prompt": "carry on", "transcript_path": str(tr)})
+    assert routed_items(env) == []
+
+
+def test_a_completion_marks_a_review_item_reported_but_leaves_it_open(env):
+    env.bind()
+    base = {"hook_event_name": "PostToolUse", "session_id": "sess-hub", "tool_name": "Agent", "tool_use_id": "toolu_X4"}
+    env.hook("routed", {**base, "tool_input": {"description": "review 101", "prompt": f"Review {PR1}. Output: a verdict", "run_in_background": True},
+                        "tool_response": {"agentId": "agent790", "status": "async_launched"}})
+    assert routed_items(env)[0]["review"] is True
+    tr = env.transcripts / "sess-hub.jsonl"
+    tr.write_text(queue_line("<task-notification>\n<task-id>agent790</task-id>\n<status>completed</status>\n</task-notification>", iso(time.time() + 5)) + "\n")
+    env.hook("prompt", {"session_id": "sess-hub", "prompt": "carry on", "transcript_path": str(tr)})
+    item = routed_items(env)[0]
+    assert item["reported"] and item["last_heard"]
+
+
+@pytest.mark.parametrize("text", [
+    "ok #7101 -- please review it",
+    "Thanks, #7102 needs your eyes",
+    "Okay, #7103 is next for you",
+    "Got it. #7104: please look at the findings",
+])
+def test_an_acknowledgement_with_a_request_is_still_tracked(env, text):
+    env.bind()
+    send(env, "peer-a", text, text)
+    assert len(routed_items(env)) == 1
+
+
+def test_an_inline_thread_reply_on_the_hub_users_own_pr_does_not_close_a_review_item(env):
+    fake_gh(env, head="aaa1111")
+    user_login(env, "pr-author")
+    env.bind()
+    send(env, "peer-a", f"Full gated review of {PR1}", "review 101")
+    set_gh_raw(env, "aaa1111", [review("aaa1111", "COMMENTED", login="pr-author", body="")])
+    env.run("tick", "--no-notify")
+    assert len(routed_items(env)) == 1
+    assert verdict_blocked(stop(env, last_assistant_message="#101 is approved, merge it."))
+    set_gh_raw(env, "aaa1111", [review("aaa1111", "COMMENTED", login="pr-author", body="Looks good, one nit.")])
+    env.run("tick", "--no-notify")
+    assert routed_items(env) == []
+
+
+@pytest.mark.parametrize("text", [
+    "Can I get a review on #7201?",
+    "#7202 needs a review",
+    "Could you give #7203 a review",
+    "Need a review of #7204 asap",
+    "Resolve the conflicts, then give #7205 a review",
+])
+def test_a_pr_with_review_as_a_noun_is_still_a_review_item(env, text):
+    env.bind()
+    send(env, "peer-a", text, "ask")
+    assert [i["review"] for i in routed_items(env)] == [True]
