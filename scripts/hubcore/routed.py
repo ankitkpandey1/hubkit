@@ -49,16 +49,23 @@ def opts(cfg: dict) -> dict:
 PUSH = re.compile(
     r"(?i)\b(fix(?:es|ed)?|address|rebase|implement|resolve|amend|patch|push|rework|refactor)\b"
 )
-EXAMPLE = re.compile(r"(?i)\b(examples?|e\.g\.|for instance|such as|sample|placeholder|hypothetical)\b")
+EXAMPLE = re.compile(
+    r"(?i)\b(examples?|e\.g\.|for instance|such as|sample|placeholder|hypothetical)\b"
+)
 QUOTED = re.compile(r"```.*?```|`[^`\n]*`|\"[^\"\n]*\"|\u201c[^\u201d\n]*\u201d", re.S)
-NOUN_BEFORE = re.compile(r"(?i)\b(the|his|her|their|its|a|an|my|our|your|that|this|in|from|with)\s+$")
-NOUN_AFTER = re.compile(r"(?i)^s?\s+(comments?|findings?|feedback|notes?|threads?|rounds?)\b")
+NOUN_BEFORE = re.compile(
+    r"(?i)\b(the|his|her|their|its|a|an|my|our|your|that|this|in|from|with)\s+$"
+)
+NOUN_AFTER = re.compile(
+    r"(?i)^s?\s+(comments?|findings?|feedback|notes?|threads?|rounds?)\b"
+)
 
 
 def strip_examples(text: str) -> str:
     """The text without what only illustrates: code fences, backtick and quoted spans, and the part of a sentence from
     "example", "e.g." or "such as" on (the line after a header that ends in a colon goes too). What comes before the marker
-    stays: "Review #7, e.g. the loader part" still asks for #7. A PR number inside an example is not an ask."""
+    stays: "Review #7, e.g. the loader part" still asks for #7. A PR number inside an example is not an ask.
+    """
     text = QUOTED.sub(" ", text)
     kept: list[str] = []
     skip_next = False
@@ -86,11 +93,20 @@ def _kinds(cfg: dict, sentence: str) -> set[str]:
     PR, not to review it. "push" marks a change verb anywhere."""
     low = sentence.lower()
     out = {"push"} if PUSH.search(low) else set()
-    hits = [m for w in (x.lower() for x in opts(cfg)["review_words"]) for m in re.finditer(re.escape(w), low)]
-    existing = all(NOUN_BEFORE.search(low[: m.start()]) or NOUN_AFTER.match(low[m.end() :]) for m in hits)
+    hits = [
+        m
+        for w in (x.lower() for x in opts(cfg)["review_words"])
+        for m in re.finditer(re.escape(w), low)
+    ]
+    existing = all(
+        NOUN_BEFORE.search(low[: m.start()]) or NOUN_AFTER.match(low[m.end() :])
+        for m in hits
+    )
     words = [x.lower() for x in opts(cfg)["review_words"]]
     later = [c.strip() for c in re.split(r",|\bthen\b|\band\b", low)[1:]]
-    asks_later = any(any(w in c for w in words) and not LEADS_CHANGE.match(c) for c in later)
+    asks_later = any(
+        any(w in c for w in words) and not LEADS_CHANGE.match(c) for c in later
+    )
     if hits and not (LEADS_CHANGE.match(low) and existing and not asks_later):
         out.add("review")
     return out
@@ -98,7 +114,9 @@ def _kinds(cfg: dict, sentence: str) -> set[str]:
 
 def _asks(cfg: dict, text: str, summary: str = "") -> set[str]:
     """The kinds of ask (see _kinds) in the sentences that name a PR, plus the summary when the text names one."""
-    sentences = [x for x in re.split(r"(?<=[.!?])\s+|\n", text) if x.strip() and PR_REF.search(x)]
+    sentences = [
+        x for x in re.split(r"(?<=[.!?])\s+|\n", text) if x.strip() and PR_REF.search(x)
+    ]
     if summary.strip() and PR_REF.search(text + " " + summary):
         sentences.append(summary)
     return set().union(*(_kinds(cfg, x) for x in sentences)) if sentences else set()
@@ -113,24 +131,38 @@ def is_review(cfg: dict, text: str, summary: str = "") -> bool:
 
 def pushes_to_pr(cfg: dict, text: str, summary: str = "") -> bool:
     """The owner is asked to change the PR (fix, rebase, address findings): its own pushes move the head."""
-    return "push" in _asks(cfg, strip_examples(text), summary)
+    body = strip_examples(text)
+    if "push" in _asks(cfg, body, summary):
+        return True
+    # a fix job whose change verb sits in another sentence than the PR number ("Fix the gaps. ... PR #7"): still a fix job
+    return (
+        bool(PR_REF.search(text + " " + summary))
+        and bool(PUSH.search(body + " " + summary))
+        and not is_review(cfg, text, summary)
+    )
 
 
 def owner_is_author(cfg: dict, owner: str, author: str) -> bool:
     """Is the owner the PR's author? A peer or agent has no GitHub login, so this uses the data on hand: an
     explicit `routed.owner_logins` map (owner name -> login), else the owner's name equals the login or contains
-    it (a login of 4+ characters). An agent id never matches, so it is treated as a non-author."""
+    it (a login of 4+ characters). An agent id never matches, so it is treated as a non-author.
+    """
     login = author.lower()
     if not login:
         return False
     mapped = opts(cfg)["owner_logins"].get(owner)
-    return (mapped or "").lower() == login or owner.lower() == login or (len(login) >= 4 and login in owner.lower())
+    return (
+        (mapped or "").lower() == login
+        or owner.lower() == login
+        or (len(login) >= 4 and login in owner.lower())
+    )
 
 
 def is_chase(cfg: dict, text: str) -> bool:
     """A short status question about a PR: an event on the existing item, not a new ask. A message with a brief marker
     (Done-when, Output) or a sentence that opens with an action on a PR (Review #N ...) is an ask whatever else it
-    says; a status question that merely mentions a review ("state of the review on #N") is not."""
+    says; a status question that merely mentions a review ("state of the review on #N") is not.
+    """
     sentences = [x.strip() for x in re.split(r"(?<=[.!?])\s+|\n", text)]
     if DELIVERABLE.search(text) or any(DIRECTIVE.match(x) for x in sentences):
         return False
@@ -152,14 +184,17 @@ DELIVERABLE = re.compile(r"(?i)done[- ]when|\boutput\b|\bdeliverable")
 
 def is_deliverable_brief(cfg: dict, description: str, prompt: str) -> bool:
     """A background agent is routed work only when its brief asks for a result (a PR, an Output, a Done-when) and is
-    not a standing watcher (`routed.skip_briefs`); a long-running agent with nothing to deliver cannot stall."""
+    not a standing watcher (`routed.skip_briefs`); a long-running agent with nothing to deliver cannot stall.
+    """
     low = f"{description} {prompt}".lower()
     if any(w.lower() in low for w in opts(cfg)["skip_briefs"]):
         return False
     return bool(DELIVERABLE.search(prompt) or PR_REF.search(prompt))
 
 
-def _is_reply(cfg: dict, owner: str, text: str, asked: list[str], now: float | None) -> bool:
+def _is_reply(
+    cfg: dict, owner: str, text: str, asked: list[str], now: float | None
+) -> bool:
     """The hub answering a peer who wrote to it recently, with no PR to work on and no brief, is not an ask."""
     if asked or DELIVERABLE.search(text):
         return False
@@ -199,7 +234,9 @@ def is_work(cfg: dict, owner: str, text: str, asked: list[str] | None = None) ->
     o = opts(cfg)
     if any(s.lower() in owner.lower() for s in o["skip_owners"]):
         return False
-    if ACK.match(text) and not (DELIVERABLE.search(text) or DIRECTIVE.search(text) or REQUEST.search(text)):
+    if ACK.match(text) and not (
+        DELIVERABLE.search(text) or DIRECTIVE.search(text) or REQUEST.search(text)
+    ):
         return False  # "Ack #399 hold": a bare acknowledgement that names a PR is not an ask; any request cue makes it one
     if asked if asked is not None else PR_REF.search(text):
         return True
@@ -215,8 +252,14 @@ SHORT_ASK = re.compile(
 
 def is_short_ask(text: str) -> bool:
     """A short message that asks the peer to do or answer something: a request verb opening a sentence, or a question.
-    Not an acknowledgement, not a status question (that is a chase), and long enough to carry a request."""
-    return len(text.strip()) >= 15 and not ACK.match(text) and not CHASE.search(text) and bool(SHORT_ASK.search(text))
+    Not an acknowledgement, not a status question (that is a chase), and long enough to carry a request.
+    """
+    return (
+        len(text.strip()) >= 15
+        and not ACK.match(text)
+        and not CHASE.search(text)
+        and bool(SHORT_ASK.search(text))
+    )
 
 
 REQUEST = re.compile(
@@ -228,7 +271,9 @@ DIRECTIVE = re.compile(
 )
 
 
-def asked_refs(cfg: dict, text: str, summary: str = "", cap: int | None = MAX_QUEUE) -> list[str]:
+def asked_refs(
+    cfg: dict, text: str, summary: str = "", cap: int | None = MAX_QUEUE
+) -> list[str]:
     """The PRs the owner is asked to work on. A short message asks about every PR it names. In a long one only
     the summary and sentences that direct an action at a PR count: a PR named in passing (a bug
     list, a status) is not an ask."""
@@ -247,7 +292,11 @@ def pr_num(ref: str) -> str:
 def pr_key(ref: str) -> str:
     """Repo and number of a PR ref: `owner/repo#N` for a URL, `#N` for a bare number (repo not known)."""
     parts = ref.rstrip("/").split("/")
-    return f"{parts[3]}/{parts[4]}#{parts[6]}".lower() if ref.startswith("http") and len(parts) >= 7 else "#" + pr_num(ref)
+    return (
+        f"{parts[3]}/{parts[4]}#{parts[6]}".lower()
+        if ref.startswith("http") and len(parts) >= 7
+        else "#" + pr_num(ref)
+    )
 
 
 def same_pr(a: str, b: str) -> bool:
@@ -287,7 +336,11 @@ def _repo_refs(cfg: dict, text: str) -> tuple[list[str], str]:
 
     text = REPO_REF.sub(repl(), text)
     for alias, repo in dict(opts(cfg).get("repo_aliases", {})).items():
-        text = re.sub(rf"(?i)(?<![\w/.-]){re.escape(alias)}(?:\s*#|\s+pr\s*#?\s*|\s+)(\d{{2,6}})\b", repl(repo), text)
+        text = re.sub(
+            rf"(?i)(?<![\w/.-]){re.escape(alias)}(?:\s*#|\s+pr\s*#?\s*|\s+)(\d{{2,6}})\b",
+            repl(repo),
+            text,
+        )
     return list(dict.fromkeys(out)), text
 
 
@@ -335,9 +388,17 @@ def pr_info(cfg: dict, url: str, timeout: float) -> dict | None:
         return None
     try:
         r = subprocess.run(
-            [exe, "pr", "view", url, "--json", "headRefOid,reviews,author,commits,state,statusCheckRollup"],
+            [
+                exe,
+                "pr",
+                "view",
+                url,
+                "--json",
+                "headRefOid,reviews,author,commits,state,statusCheckRollup",
+            ],
             capture_output=True,
-            encoding="utf-8", errors="replace",
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             check=False,
         )
@@ -366,7 +427,14 @@ def pr_info(cfg: dict, url: str, timeout: float) -> dict | None:
         return None
 
 
-FAILED_CHECK = {"FAILURE", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE", "ACTION_REQUIRED", "ERROR"}
+FAILED_CHECK = {
+    "FAILURE",
+    "TIMED_OUT",
+    "CANCELLED",
+    "STARTUP_FAILURE",
+    "ACTION_REQUIRED",
+    "ERROR",
+}
 OK_CHECK = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 
 
@@ -374,7 +442,11 @@ def ci_state(rollup: object) -> str:
     """CI at the PR's head from gh's statusCheckRollup: 'failing', 'pending', 'green', or 'none' (no checks reported)."""
     if not isinstance(rollup, list) or not rollup:
         return "none"
-    seen = {str(c.get("conclusion") or c.get("state") or "").upper() or "PENDING" for c in rollup if isinstance(c, dict)}
+    seen = {
+        str(c.get("conclusion") or c.get("state") or "").upper() or "PENDING"
+        for c in rollup
+        if isinstance(c, dict)
+    }
     if seen & FAILED_CHECK:
         return "failing"
     return "green" if seen <= OK_CHECK else "pending"
@@ -445,12 +517,15 @@ def _same_job(i: dict, owner: str, prs: list[str], summary: str) -> bool:
         return False
     if prs:
         return overlaps([*i["prs"], *i.get("queue", [])], prs)
-    return not i["prs"]  # no PR named: a follow-up to the same owner is the same outcome
+    return not i[
+        "prs"
+    ]  # no PR named: a follow-up to the same owner is the same outcome
 
 
 def _chase(cfg: dict, item: dict, text: str, heads: dict[str, str], now: float) -> None:
     """A follow-up to the owner about work already on the item: counted, never a new clock. It answers a moved head
-    or an old-head verdict (the hub acted), so those flags clear and the new head becomes the baseline."""
+    or an old-head verdict (the hub acted), so those flags clear and the new head becomes the baseline.
+    """
     _event(item, "chase", text, now)
     item["chases"] = int(item.get("chases", 0)) + 1
     item["addressed"] = [*item.get("addressed", []), now]
@@ -462,7 +537,9 @@ def _chase(cfg: dict, item: dict, text: str, heads: dict[str, str], now: float) 
     item["heads"] = {**item["heads"], **heads}
 
 
-def chase_owner(cfg: dict, owner: str, text: str, now: float | None = None) -> dict | None:
+def chase_owner(
+    cfg: dict, owner: str, text: str, now: float | None = None
+) -> dict | None:
     """A message to an owner who has open items, naming no PR and carrying no new brief, is a follow-up on all of
     them. Returns the first item, or None when the owner has none."""
     now = now or time.time()
@@ -508,7 +585,9 @@ def record(
         if hit is not None and (chase or follow_up):
             _chase(cfg, hit, summary, heads, now)
             if not hit.get("queue"):
-                hit["prs"] = _merge_prs(hit["prs"], prs)  # a full URL replaces a bare #N
+                hit["prs"] = _merge_prs(
+                    hit["prs"], prs
+                )  # a full URL replaces a bare #N
             work_save(sd, all_)
             return hit
         is_new = hit is None
@@ -528,14 +607,37 @@ def record(
             all_.append(hit)
         moved: list[dict] = []
         if is_new:
-            hit["behind"] = [i["id"] for i in all_ if i is not hit and i.get("kind") == "routed" and i["owner"] == owner]
-            for other in all_:  # a brief on the same PRs to another owner is a re-brief: it addresses the old item
-                if other is not hit and other.get("kind") == "routed" and other["owner"] != owner and overlaps(named, [*other["prs"], *other.get("queue", [])]):
+            hit["behind"] = [
+                i["id"]
+                for i in all_
+                if i is not hit and i.get("kind") == "routed" and i["owner"] == owner
+            ]
+            for (
+                other
+            ) in (
+                all_
+            ):  # a brief on the same PRs to another owner is a re-brief: it addresses the old item
+                if (
+                    other is not hit
+                    and other.get("kind") == "routed"
+                    and other["owner"] != owner
+                    and overlaps(named, [*other["prs"], *other.get("queue", [])])
+                ):
                     other["addressed"] = [*other.get("addressed", []), now]
-                    if brief:  # a real re-brief moves the PRs: the old owner no longer holds them
-                        other["prs"] = [u for u in other["prs"] if not overlaps([u], named)]
-                        other["queue"] = [u for u in other.get("queue", []) if not overlaps([u], named)]
-                        other["heads"] = {u: h for u, h in other["heads"].items() if u in other["prs"]}
+                    if (
+                        brief
+                    ):  # a real re-brief moves the PRs: the old owner no longer holds them
+                        other["prs"] = [
+                            u for u in other["prs"] if not overlaps([u], named)
+                        ]
+                        other["queue"] = [
+                            u
+                            for u in other.get("queue", [])
+                            if not overlaps([u], named)
+                        ]
+                        other["heads"] = {
+                            u: h for u, h in other["heads"].items() if u in other["prs"]
+                        }
                         if not other["prs"]:
                             _archive(cfg, other, f"re-briefed to {owner}", now)
                             moved.append(other)
@@ -557,7 +659,9 @@ def record(
             chased_level=None,
         )
         _set_estimate(cfg, hit, estimate, now)
-        hit.setdefault("heads0", dict(heads))  # the head when first asked: a later head is the owner's artifact
+        hit.setdefault(
+            "heads0", dict(heads)
+        )  # the head when first asked: a later head is the owner's artifact
         hit["heads"] = {
             **hit["heads"],
             **heads,
@@ -578,8 +682,21 @@ def _set_estimate(cfg: dict, item: dict, given: int | None, now: float) -> None:
     from . import slow
 
     mins, basis = (float(given), "brief") if given else slow.item_default(cfg, item)
-    item["estimates"] = [*item.get("estimates", []), {"t": now, "min": mins, "source": "brief" if given else "default", "basis": basis}]
-    item.update(estimate_min=mins, estimate_defaulted=not given, estimate_basis=basis, addressed=[])
+    item["estimates"] = [
+        *item.get("estimates", []),
+        {
+            "t": now,
+            "min": mins,
+            "source": "brief" if given else "default",
+            "basis": basis,
+        },
+    ]
+    item.update(
+        estimate_min=mins,
+        estimate_defaulted=not given,
+        estimate_basis=basis,
+        addressed=[],
+    )
 
 
 def from_tool(
@@ -599,7 +716,9 @@ def from_tool(
         if _is_follow_up(cfg, owner, text):
             return chase_owner(cfg, owner, str(ti.get("summary") or text), now)
         asked = asked_refs(cfg, text, str(ti.get("summary") or ""))
-        if _is_reply(cfg, owner, text, asked, now) or not is_work(cfg, owner, text, asked):
+        if _is_reply(cfg, owner, text, asked, now) or not is_work(
+            cfg, owner, text, asked
+        ):
             return None
         summary = str(ti.get("summary") or text.splitlines()[0])[:120]
         chase = is_chase(cfg, text)
@@ -620,7 +739,9 @@ def from_tool(
     else:
         return None
     every = asked_refs(cfg, text, summary)
-    queue = every if len(every) > 1 else []  # one PR per clock: several PRs are a queue, the first is current
+    queue = (
+        every if len(every) > 1 else []
+    )  # one PR per clock: several PRs are a queue, the first is current
     prs = every[:1] if queue else every
     heads: dict[str, str] = {}
     authored = False
@@ -732,8 +853,10 @@ def next_action(cfg: dict, item: dict, now: float) -> str:
     lvl = eff_level(cfg, item, now)
     if item.get("reported") and not item.get("review"):
         prs = " ".join(_pr_no(u) for u in item["prs"])
-        return (f"{o} reported it done {int((now - item['reported']) / 60)} min ago; that is a claim. Check the artifact"
-                f"{' (' + prs + ')' if prs else ''}, then: hubkit work done {item['id']} --note \"<what you checked>\"")
+        return (
+            f"{o} reported it done {int((now - item['reported']) / 60)} min ago; that is a claim. Check the artifact"
+            f"{' (' + prs + ')' if prs else ''}, then: hubkit work done {item['id']} --note \"<what you checked>\""
+        )
     if lvl is not None:
         if item.get("chased_level") is not None and item["chased_level"] >= lvl:
             nxt = base(cfg, item) + limit(cfg, item) * 60 * (lvl + 2)
@@ -813,7 +936,9 @@ def alerts(cfg: dict, now: float) -> list[dict]:
                 }
             )
         lvl = eff_level(cfg, i, now)
-        if lvl is not None and needs_action(cfg, i, now):  # a chased item waits: no alert, no wake-up
+        if lvl is not None and needs_action(
+            cfg, i, now
+        ):  # a chased item waits: no alert, no wake-up
             out.append(
                 {
                     "key": f"{i['id']}:routed_stalled:L{lvl}",
@@ -836,8 +961,10 @@ def block_lines(cfg: dict, work: list[dict], now: float) -> list[str]:
         pr = ", ".join(
             f"{_pr_no(u)}@{i['heads'].get(u, '?')[:7]}" for u in i.get("prs", [])
         )
-        flags = (f" +{len(i['queue']) - 1} queued" if i.get("queue") else "") + (" REVIEW" if i.get("review") else "") + (
-            " PR unknown" if i.get("pr_unknown") else ""
+        flags = (
+            (f" +{len(i['queue']) - 1} queued" if i.get("queue") else "")
+            + (" REVIEW" if i.get("review") else "")
+            + (" PR unknown" if i.get("pr_unknown") else "")
         )
         out.append(
             f"  {i['id']} -> {i['owner']}: {i['title'][:50]}{' [' + pr + ']' if pr else ''}{flags}; "
@@ -868,15 +995,28 @@ def heard(cfg: dict, events: list[tuple[float, str, str]]) -> int:
                     i["owner"] in text
                     or bool(i.get("tool_use_id") and i["tool_use_id"] in text)
                 )
-                if by_text and COMPLETED.search(text) and ts > (i.get("routed_at") or i["added"]):
+                if (
+                    by_text
+                    and COMPLETED.search(text)
+                    and ts > (i.get("routed_at") or i["added"])
+                ):
                     i["reported"] = ts  # the agent finished after this ask and reported
-                    if not i.get("review"):  # a review item stays: the review check on the PR decides
+                    if not i.get(
+                        "review"
+                    ):  # a review item stays: the review check on the PR decides
                         i["answered"] = True
                         i["done_note"] = "agent completed (task notification)"
                 from_owner = bool(name) and name.lower() == i["owner"].lower()
-                if from_owner and not i.get("review") and ts > (i.get("routed_at") or i["added"]) and is_report(text) \
-                        and _report_is_about(all_, i, text):
-                    i["reported"] = ts  # a claim, not evidence: the item closes on the artifact (refresh_prs) or on `work done`
+                if (
+                    from_owner
+                    and not i.get("review")
+                    and ts > (i.get("routed_at") or i["added"])
+                    and is_report(text)
+                    and _report_is_about(all_, i, text)
+                ):
+                    i["reported"] = (
+                        ts  # a claim, not evidence: the item closes on the artifact (refresh_prs) or on `work done`
+                    )
                     i["claimed"] = text[:160]
                     n += 1  # a change to save even when no last_heard moved
                 if (name.lower() == i["owner"].lower() or by_text) and ts > (
@@ -885,10 +1025,14 @@ def heard(cfg: dict, events: list[tuple[float, str, str]]) -> int:
                     i["last_heard"] = ts
                     n += 1
                     if i.get("state_ask") and ts > (i.get("routed_at") or 0):
-                        i["answered"] = True  # a state question is answered by one reply
+                        i["answered"] = (
+                            True  # a state question is answered by one reply
+                        )
         closing = [x for x in all_ if x.get("answered")]
         for i in closing:
-            _archive(cfg, i, i.get("done_note") or "state question answered", time.time())
+            _archive(
+                cfg, i, i.get("done_note") or "state question answered", time.time()
+            )
             all_.remove(i)
         if n or closing:
             work_save(sd, all_)
@@ -896,22 +1040,39 @@ def heard(cfg: dict, events: list[tuple[float, str, str]]) -> int:
 
 
 COMPLETED = re.compile(r"<status>\s*completed\s*</status>")
-PEER_BODY = re.compile(r"<cross-session-message[^>]*>(.*?)(?:</cross-session-message>|\Z)", re.S)
-PEER_RESULT = re.compile(r"(?i)\b(done|finished|complete[d]?|merged|pushed|passed|passing|green|fixed|shipped|result|ready for)\b")
-PEER_NOT_RESULT = re.compile(r"(?i)\b(blocked|failed|failing|cannot|can't|couldn't|unable|error|stuck|waiting)\b")
+PEER_BODY = re.compile(
+    r"<cross-session-message[^>]*>(.*?)(?:</cross-session-message>|\Z)", re.S
+)
+PEER_RESULT = re.compile(
+    r"(?i)\b(done|finished|complete[d]?|merged|pushed|passed|passing|green|fixed|shipped|result|ready for)\b"
+)
+PEER_NOT_RESULT = re.compile(
+    r"(?i)\b(blocked|failed|failing|cannot|can't|couldn't|unable|error|stuck|waiting)\b"
+)
 
 
 def _report_is_about(all_: list[dict], item: dict, text: str) -> bool:
     """A report closes the owner's only item; when the owner holds several, it must name this item's PR or id."""
-    mine = [x for x in all_ if x.get("kind") == "routed" and x["owner"] == item["owner"]]
-    return len(mine) == 1 or any(pr_num(u) in re.findall(r"\d+", text) for u in item["prs"]) or item["id"] in text
+    mine = [
+        x for x in all_ if x.get("kind") == "routed" and x["owner"] == item["owner"]
+    ]
+    return (
+        len(mine) == 1
+        or any(pr_num(u) in re.findall(r"\d+", text) for u in item["prs"])
+        or item["id"] in text
+    )
 
 
 def is_report(text: str) -> bool:
     """A peer's message reports a result: a result word, no blocker word, and it does not end on a question."""
     m = PEER_BODY.search(text)
     body = (m[1] if m else text).strip()
-    return bool(body) and not body.endswith("?") and bool(PEER_RESULT.search(body)) and not PEER_NOT_RESULT.search(body)
+    return (
+        bool(body)
+        and not body.endswith("?")
+        and bool(PEER_RESULT.search(body))
+        and not PEER_NOT_RESULT.search(body)
+    )
 
 
 def peer_name(text: str) -> str:
@@ -1008,12 +1169,16 @@ def _landed(
     out: dict[str, tuple[str, dict | None]] = {}
     for u in item["prs"]:
         info = got.get(u)
-        revs = [
-            r
-            for r in (info["reviews"] if info else [])
-            if r["at"] >= (item.get("routed_at") or item["added"])
-            and counts_as_review(cfg, r, info)
-        ] if info else []
+        revs = (
+            [
+                r
+                for r in (info["reviews"] if info else [])
+                if r["at"] >= (item.get("routed_at") or item["added"])
+                and counts_as_review(cfg, r, info)
+            ]
+            if info
+            else []
+        )
         if not info or not revs:
             out[u] = ("", None)
             continue
@@ -1068,11 +1233,24 @@ def _advance(item: dict, det: dict, now: float) -> dict:
     item["queue"] = rest if len(rest) > 1 else []
     item["prs"] = rest[:1]
     item["heads"] = {}
-    item.update(routed_at=now, head_moved=None, verdict_old_head=None, verdict_acked=None, chased_level=None)
-    _event(item, "advance", f"{_pr_no(done)} reviewed; now {_pr_no(rest[0]) if rest else 'none'}", now)
+    item.update(
+        routed_at=now,
+        head_moved=None,
+        verdict_old_head=None,
+        verdict_acked=None,
+        chased_level=None,
+    )
+    _event(
+        item,
+        "advance",
+        f"{_pr_no(done)} reviewed; now {_pr_no(rest[0]) if rest else 'none'}",
+        now,
+    )
     return {
         "key": f"{item['id']}:queue_advanced:{pr_num(done)}",
-        "msg": f"{item['id']} to {item['owner']}: {_pr_no(done)} {det['state']} at {det['commit'][:7]}; the clock restarts on the next PR. NEXT: read the review on GitHub and act on it",
+        "msg": (
+            f"{item['id']} to {item['owner']}: {_pr_no(done)} {det['state']} at {det['commit'][:7]}; the clock restarts on the next PR. NEXT: read the review on GitHub and act on it"
+        ),
     }
 
 
@@ -1081,7 +1259,11 @@ def artifact_exists(item: dict, url: str, info: dict) -> bool:
     if info.get("state") in ("MERGED", "CLOSED"):
         return True
     first = str((item.get("heads0") or {}).get(url) or "")
-    return bool(first) and not same_head(first, info["head"]) and info.get("ci", "none") != "failing"
+    return (
+        bool(first)
+        and not same_head(first, info["head"])
+        and info.get("ci", "none") != "failing"
+    )
 
 
 def next_step(cfg: dict, d: dict, owner: str) -> str:
@@ -1103,7 +1285,13 @@ def next_step(cfg: dict, d: dict, owner: str) -> str:
 
 def _reply_owed(cfg: dict, item: dict, done: dict[str, dict]) -> str:
     """Names the people who asked the hub for this review (inbound reply items on the same PRs)."""
-    who = sorted({x["owner"] for x in work_load(store.state(cfg)) if x.get("kind") == "reply" and overlaps(list(done), x.get("prs", []))})
+    who = sorted(
+        {
+            x["owner"]
+            for x in work_load(store.state(cfg))
+            if x.get("kind") == "reply" and overlaps(list(done), x.get("prs", []))
+        }
+    )
     return f" Reply owed to: {', '.join(who)}." if who else ""
 
 
@@ -1117,13 +1305,19 @@ def _close_landed(cfg: dict, item: dict, done: dict[str, dict], now: float) -> d
         f"{_pr_no(u)} {d['state']} by {d['login']} at {d['commit'][:7]} (the head), CI {d.get('ci', 'none')}"
         for u, d in done.items()
     )
-    gap = f" Still open: {' '.join(_pr_no(u) for u in item['prs'])} (no review at its head yet)." if item["prs"] else ""
+    gap = (
+        f" Still open: {' '.join(_pr_no(u) for u in item['prs'])} (no review at its head yet)."
+        if item["prs"]
+        else ""
+    )
     if not item["prs"]:
         _archive(cfg, item, "review " + note, now)
     first = next(iter(done.values()))
     return {
         "key": f"{item['id']}:review_landed:{pr_num(next(iter(done)))}",
-        "msg": f"{item['id']} to {item['owner']}: {note}.{gap}{_reply_owed(cfg, item, done)} NEXT: {next_step(cfg, first, item['owner'])}",
+        "msg": (
+            f"{item['id']} to {item['owner']}: {note}.{gap}{_reply_owed(cfg, item, done)} NEXT: {next_step(cfg, first, item['owner'])}"
+        ),
     }
 
 
@@ -1134,12 +1328,19 @@ def resolve_bare_refs(cfg: dict) -> None:
         return
 
     def fix(u: str) -> str:
-        return u if u.startswith("http") else f"https://github.com/{repo}/pull/{pr_num(u)}"
+        return (
+            u if u.startswith("http") else f"https://github.com/{repo}/pull/{pr_num(u)}"
+        )
 
     sd = store.state(cfg)
     with store.locked(sd / "work.lock"):
         all_ = work_load(sd)
-        if not any(not u.startswith("http") for i in all_ if i.get("kind") == "routed" for u in [*i["prs"], *i.get("queue", [])]):
+        if not any(
+            not u.startswith("http")
+            for i in all_
+            if i.get("kind") == "routed"
+            for u in [*i["prs"], *i.get("queue", [])]
+        ):
             return
         for i in all_:
             if i.get("kind") == "routed":
@@ -1175,15 +1376,23 @@ def refresh_prs(cfg: dict, now: float) -> list[dict]:
                 if not info:
                     continue
                 old = i["heads"].get(u)
-                if not (old and HEX_HEAD.fullmatch(old)):  # unset, or mangled by an older redaction: rebaseline
+                if not (
+                    old and HEX_HEAD.fullmatch(old)
+                ):  # unset, or mangled by an older redaction: rebaseline
                     i["heads"][u] = info["head"]
                 elif owner_is_author(cfg, i["owner"], info["author"]):
-                    i["review"] = False  # the person asked wrote the PR: their pushes are the work, not a stale review
+                    i["review"] = (
+                        False  # the person asked wrote the PR: their pushes are the work, not a stale review
+                    )
                     i["heads"][u] = info["head"]
                 elif i.get("pushes") and not i.get("review"):
-                    i["heads"][u] = info["head"]  # the owner was asked to push to this PR: its pushes are the work
+                    i["heads"][u] = info[
+                        "head"
+                    ]  # the owner was asked to push to this PR: its pushes are the work
                 elif owner_is_author(cfg, i["owner"], info.get("head_author", "")):
-                    i["heads"][u] = info["head"]  # the head moved by the owner's own commit: progress, not a stray push
+                    i["heads"][u] = info[
+                        "head"
+                    ]  # the head moved by the owner's own commit: progress, not a stray push
                     i["last_heard"] = max(i.get("last_heard") or 0, now)
                 elif not same_head(old, info["head"]):
                     i["head_moved"] = {
@@ -1194,8 +1403,14 @@ def refresh_prs(cfg: dict, now: float) -> list[dict]:
                     }
                     _event(i, "head_moved", f"{old[:7]} -> {info['head'][:7]}", now)
                     i["heads"][u] = info["head"]
-                if i.get("waiting") and info["review_at"] and info["review_at"] > (i.get("routed_at") or 0):
-                    i["waiting"] = False  # a review shows on the PR: the owner has started it
+                if (
+                    i.get("waiting")
+                    and info["review_at"]
+                    and info["review_at"] > (i.get("routed_at") or 0)
+                ):
+                    i["waiting"] = (
+                        False  # a review shows on the PR: the owner has started it
+                    )
                 if info["review_at"] and info["review_at"] > base(cfg, i):
                     i["last_heard"] = info["review_at"]
             res = _landed(cfg, i, got) if i.get("review") else {}
@@ -1205,16 +1420,32 @@ def refresh_prs(cfg: dict, now: float) -> list[dict]:
                 old if old and acked != [old["commit"], old["head"]] else None
             )
             done = {u: d for u, (v, d) in res.items() if v == "closed" and d}
-            if i.get("reported") and not i.get("review"):  # the owner said done: close only on its artifact
+            if i.get("reported") and not i.get(
+                "review"
+            ):  # the owner said done: close only on its artifact
                 for u in i["prs"]:
                     info = got.get(u)
                     if info and artifact_exists(i, u, info):
-                        done[u] = {"state": "REPORTED", "login": i["owner"], "commit": info["head"], "ci": info.get("ci", "none")}
+                        done[u] = {
+                            "state": "REPORTED",
+                            "login": i["owner"],
+                            "commit": info["head"],
+                            "ci": info.get("ci", "none"),
+                        }
             if i.get("review"):  # a merged or closed PR needs no review any more
                 for u in i["prs"]:
                     info = got.get(u)
-                    if u not in done and info and info.get("state") in ("MERGED", "CLOSED"):
-                        done[u] = {"state": info["state"], "login": "GitHub", "commit": info["head"], "ci": info.get("ci", "none")}
+                    if (
+                        u not in done
+                        and info
+                        and info.get("state") in ("MERGED", "CLOSED")
+                    ):
+                        done[u] = {
+                            "state": info["state"],
+                            "login": "GitHub",
+                            "commit": info["head"],
+                            "ci": info.get("ci", "none"),
+                        }
             if done and i.get("queue"):
                 cur = i["prs"][0]
                 if cur in done:

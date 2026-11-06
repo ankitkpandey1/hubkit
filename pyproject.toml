@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hubkit-cli"
-version = "0.2.1"
+version = "0.2.2"
 description = "Session supervisor for Claude Code: hooks-based multi-agent orchestration with order clocks, routed-work tracking, a watchdog and a stop gate, standard library only."
 readme = "README.md"
 requires-python = ">=3.14"

@@ -4,6 +4,11 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-06
+
+### Fixed
+- A fix job whose change verb and PR number are in different sentences ("Fix the gaps. ... PR #7") is still recognised as a fix job, so its owner pushing to the PR is not counted as a stalled or moved head.
+
 ## [0.2.1] - 2026-11-06
 
 ### Added

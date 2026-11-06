@@ -2,7 +2,7 @@
 
 import json
 
-from test_hubkit import PR1, fake_gh, review, routed_items, send
+from test_hubkit import PR1, PR2, fake_gh, review, routed_items, send
 
 
 def gh_json(env, head, reviews=None, **extra):
@@ -42,3 +42,15 @@ def test_an_approval_on_red_ci_says_not_to_merge(env):
     gh_json(env, "aaa1111", [review("aaa1111")], statusCheckRollup=[{"conclusion": "FAILURE"}])
     out = env.run("tick", "--no-notify").stdout
     assert "CI is failing" in out and "do not merge on red" in out
+
+
+def test_an_owners_pushes_to_a_fix_job_are_not_a_stalled_head_but_a_reviews_moved_head_still_is(env):
+    fake_gh(env, head="aaa1111")
+    env.bind()
+    send(env, "peer-fix", f"Fix the gaps from the audit and update the tests. Done-when: tests pass. Output: the PR {PR1}. Estimate: 30m", "audit work")
+    send(env, "peer-rev", f"Full gated review of {PR2}", "review 102")
+    gh_json(env, "bbb2222")
+    out = env.run("tick", "--no-notify").stdout
+    items = {i["owner"]: i for i in routed_items(env)}
+    assert items["peer-fix"]["head_moved"] is None and items["peer-fix"]["heads"][PR1] == "bbb2222"
+    assert items["peer-rev"]["head_moved"] and "ALERT" in out
