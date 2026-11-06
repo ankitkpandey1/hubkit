@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run each guard test against a copy of the scripts with that guard reverted; it must FAIL.
 
-Usage: python3 tests/run_reverts.py   (exit 0 when every reverted copy fails its test)
+Usage: python3 tests/run_reverts.py [TEXT]   (TEXT limits it to entries whose test contains it; exit 0 when every reverted copy fails its test)
 """
 
 import os
@@ -63,12 +63,12 @@ REVERTS = [
     ("redact then truncate", "hubcore/store.py", "    return redact(text)[0][:n]", "    return redact(text[:n])[0]", "test_cut_secret_does_not_leak_a_prefix"),
     ("blocking order lock", "hubcore/orders.py", '        with store.locked(self.sd / "lock"):  # blocking', '        with __import__("contextlib").nullcontext():  # blocking', "test_order_open_waits_for_a_held_lock_instead_of_skipping_it"),
     ("close row before archive row", "hubcore/orders.py", '            self._append(oid, "close", evidence=evidence)  # source of truth first\n            self._die_after("close")\n            self._archive(self.get(oid), "closed", {"evidence": evidence})', '            self._archive(self.get(oid), "closed", {"evidence": evidence})\n            self._die_after("close")\n            self._append(oid, "close", evidence=evidence)', "test_close_row_is_written_before_archive_and_crash_is_repaired"),
-    ("check-clean scans tests and references", "hubcore/cli.py", '{"__pycache__", ".pytest_cache", ".git"} & set(', '{"__pycache__", ".pytest_cache", ".git", "tests", "references"} & set(', "test_check_clean_flags_a_term_and_passes_when_absent"),
+    ("check-clean scans tests and references", "hubcore/cli.py", '".git", ".ruff_cache", ".mypy_cache"} & set(', '".git", ".ruff_cache", ".mypy_cache", "tests", "references"} & set(', "test_check_clean_flags_a_term_and_passes_when_absent"),
     ("mep fallback dirs for cron PATH", "hubcore/status.py", '("~/.local/bin", "/usr/local/bin", "~/bin")', "()", "test_mep_found_with_cron_style_path"),
     ("mep stale-keep", "hubcore/status.py", 'if prev and prev.get("state") in ("ok", "stale"):', "if False:", "test_slow_mep_keeps_last_good_answer_not_unverified"),
     ("mep timeout default", "hubcore/config.py", '"mep": {"enabled": True, "timeout_s": 30}', '"mep": {"enabled": True, "timeout_s": 5}', "test_default_mep_timeout_covers_a_real_status_call"),
     # routed work
-    ("routed: acks and long non-work are not tracked", "hubcore/routed.py", '    if asked if asked is not None else PR_REF.search(text):\n        return True\n    return len(text) >= int(o["min_chars"]) and not ACK.match(text)', "    return True", "test_acks_inbox_watcher_and_other_sessions_are_not_tracked"),
+    ("routed: acks and long non-work are not tracked", "hubcore/routed.py", '    if len(text) >= int(o["min_chars"]):\n        return not ACK.match(text)\n    return is_short_ask(text)', "    return True", "test_acks_inbox_watcher_and_other_sessions_are_not_tracked"),
     ("routed: inbox watcher is never tracked", "hubcore/routed.py", '    if any(s.lower() in owner.lower() for s in o["skip_owners"]):\n        return False\n', "", "test_acks_inbox_watcher_and_other_sessions_are_not_tracked"),
     ("routed: hub session only", "hubcore/hooks.py", 'if not is_hub(cfg, payload) or tool not in ("SendMessage", "Agent"):', 'if tool not in ("SendMessage", "Agent"):', "test_acks_inbox_watcher_and_other_sessions_are_not_tracked"),
     ("routed: foreground agent not tracked", "hubcore/routed.py", '        "run_in_background"\n    ):', '        "run_in_background", True\n    ):', "test_background_agent_is_tracked_foreground_agent_is_not"),
@@ -97,8 +97,8 @@ REVERTS = [
     ('heard: queued task notification', 'hubcore/routed.py', 'startswith("<task-notification")', 'startswith("<never")', 'test_agent_completion_still_queued_marks_heard'),
     ('watcher briefs are not work', 'hubcore/routed.py', 'if any(w.lower() in low for w in opts(cfg)["skip_briefs"]):', 'if False:', 'test_watcher_and_deliverable_free_agents_are_not_tracked'),
     ('agent without deliverable is not work', 'hubcore/routed.py', 'return bool(DELIVERABLE.search(prompt) or PR_REF.search(prompt))', 'return True', 'test_watcher_and_deliverable_free_agents_are_not_tracked'),
-    ('bare ref: full URL replaces it', 'hubcore/routed.py', 'if n not in by_num or ref.startswith("http"):', 'if n not in by_num:', 'test_bare_ref_and_full_url_to_the_same_owner_are_one_outcome'),
-    ('bare ref: same number is one outcome', 'hubcore/routed.py', 'return bool(_nums([*i["prs"], *i.get("queue", [])]) & _nums(prs))', 'return False', 'test_bare_ref_and_full_url_to_the_same_owner_are_one_outcome'),
+    ('bare ref: full URL replaces it', 'hubcore/routed.py', '        elif ref.startswith("http"):', '        elif False:', 'test_bare_ref_and_full_url_to_the_same_owner_are_one_outcome'),
+    ('bare ref: same number is one outcome', 'hubcore/routed.py', '        return overlaps([*i["prs"], *i.get("queue", [])], prs)', '        return False', 'test_bare_ref_and_full_url_to_the_same_owner_are_one_outcome'),
     ('bare ref: resolves against repo', 'hubcore/routed.py', 'f"https://github.com/{repo}/pull/{n}" if repo else f"#{n}"', 'f"#{n}"', 'test_bare_ref_resolves_against_the_configured_repo_so_gh_runs'),
     ('one chase line per owner', 'hubcore/routed.py', 'by_owner.setdefault(i["owner"], []).append(i)', 'by_owner.setdefault(i["id"], []).append(i)', 'test_one_owner_gets_one_chase_line_whatever_the_item_count'),
     ('chase is an event, not a clock', 'hubcore/routed.py', 'if hit is not None and (chase or follow_up):', 'if False:', 'test_a_chase_is_an_event_not_a_new_clock'),
@@ -119,7 +119,7 @@ REVERTS = [
     ('gate: question needs an ask', 'hubcore/gate.py', ' and not blocked_on_user(cfg)', '', 'test_a_question_to_the_user_needs_something_blocked_on_him'),
     ('gate: question check', 'hubcore/gate.py', 'if is_question(cfg, last) and not blocked_on_user(cfg):', 'if False:', 'test_a_question_to_the_user_needs_something_blocked_on_him'),
     ('gate: verdict check', 'hubcore/gate.py', 'for n in unverified_verdict(cfg, last):', 'for n in []:', 'test_a_verdict_is_checked_against_github_per_pr_and_per_sentence'),
-    ('gate: verdict per sentence', 'hubcore/gate.py', 're.split(r"(?<=[.!?])\\s+|\\n", last)', '[last]', 'test_a_verdict_is_checked_against_github_per_pr_and_per_sentence'),
+    ('gate: verdict per sentence', 'hubcore/gate.py', '    named: list[str] = []\n    for sentence in re.split(r"(?<=[.!?])\\s+|\\n", last):', '    named: list[str] = []\n    for sentence in [last]:', 'test_a_verdict_is_checked_against_github_per_pr_and_per_sentence'),
     ('gate: verdict read from GitHub', 'hubcore/gate.py', '    info = routed.pr_info(cfg, url, timeout)\n    if info is None:\n        return True\n', '    return False\n    info = routed.pr_info(cfg, url, timeout)\n    if info is None:\n        return True\n', 'test_a_verdict_is_checked_against_github_per_pr_and_per_sentence'),
     ('stop output reaches the model as a block', 'hubcore/hooks.py', 'json.dumps({"decision": "block", "reason": "\\n".join(reasons)})', '"\\n".join(reasons)', 'test_stop_blocks_until_a_watch_is_running_then_lets_the_turn_end'),
     ('a stalled item blocks the stop', 'hubcore/gate.py', 'reasons = routed.prompt_lines(cfg, now)', 'reasons = []', 'test_a_stalled_item_blocks_the_stop_until_the_owner_is_chased'),
@@ -130,7 +130,7 @@ REVERTS = [
     ('sha redacted outside head fields', 'hubcore/redact.py', '        if sha_ok and GIT_SHA.fullmatch(obj):', '        if GIT_SHA.fullmatch(obj):', 'test_sha_is_kept_only_under_head_fields_and_secrets_are_still_redacted'),
     ('verdict_acked is a sha field', 'hubcore/redact.py', ', "verdict_acked"})', '})', 'test_an_old_head_verdict_blocks_once_and_a_chase_clears_it_for_good'),
     ('mangled baseline is rebaselined', 'hubcore/routed.py', 'if not (old and HEX_HEAD.fullmatch(old)):', 'if old is None:', 'test_a_mangled_stored_baseline_is_rebaselined_not_called_a_move'),
-    ("follow-up naming the item's PR is a chase", 'hubcore/routed.py', 'and _nums(named) <= _nums([*hit["prs"], *hit.get("queue", [])])', 'and False', 'test_follow_up_naming_a_pr_on_the_item_is_a_chase_that_keeps_the_clock_and_answers_a_moved_head'),
+    ("follow-up naming the item's PR is a chase", 'hubcore/routed.py', 'and covers(named, [*hit["prs"], *hit.get("queue", [])])', 'and False', 'test_follow_up_naming_a_pr_on_the_item_is_a_chase_that_keeps_the_clock_and_answers_a_moved_head'),
     ('chase clears the moved-head flag', 'hubcore/routed.py', 'item["head_moved"] = item["verdict_old_head"] = None', 'pass', 'test_follow_up_naming_a_pr_on_the_item_is_a_chase_that_keeps_the_clock_and_answers_a_moved_head'),
     ('chase rebaselines the head', 'hubcore/routed.py', 'item["heads"] = {**item["heads"], **heads}', 'pass', 'test_follow_up_naming_a_pr_on_the_item_is_a_chase_that_keeps_the_clock_and_answers_a_moved_head'),
     ('chase acks an old-head verdict', 'hubcore/routed.py', 'item["verdict_acked"] = [v["commit"], v["head"]]', 'pass', 'test_an_old_head_verdict_blocks_once_and_a_chase_clears_it_for_good'),
@@ -138,7 +138,7 @@ REVERTS = [
     ("short follow-up chases the owner's items", 'hubcore/routed.py', 'if _is_follow_up(cfg, owner, text):', 'if False:', 'test_a_short_follow_up_without_a_pr_counts_as_a_chase_on_every_item_of_the_owner'),
     ('acknowledgement is not a chase', 'hubcore/routed.py', '        not ACK.match(text)\n', '        True\n', 'test_a_short_follow_up_without_a_pr_counts_as_a_chase_on_every_item_of_the_owner'),
     ('several PRs are a queue', 'hubcore/routed.py', 'len(every) > 1 else []', 'len(every) > MAX_PRS else []', 'test_two_prs_in_one_message_keep_one_pr_per_clock'),
-    ('queue members match the item', 'hubcore/routed.py', '_nums([*i["prs"], *i.get("queue", [])]) & _nums(prs)', '_nums(i["prs"]) & _nums(prs)', 'test_two_prs_in_one_message_keep_one_pr_per_clock'),
+    ('queue members match the item', 'hubcore/routed.py', '        return overlaps([*i["prs"], *i.get("queue", [])], prs)', '        return overlaps(i["prs"], prs)', 'test_two_prs_in_one_message_keep_one_pr_per_clock'),
     ('landed PR is dropped from the item', 'hubcore/routed.py', 'item["prs"] = [u for u in item["prs"] if u not in done]', 'item["prs"] = item["prs"]', 'test_landed_reviews_drop_their_pr_and_the_gaps_are_reported'),
     ('gaps are reported', 'hubcore/routed.py', 'Still open:', 'Left:', 'test_landed_reviews_drop_their_pr_and_the_gaps_are_reported'),
     ('bare refs are resolved', 'hubcore/routed.py', '    resolve_bare_refs(cfg)\n    todo', '    todo', 'test_bare_refs_recorded_before_the_repo_was_set_are_resolved_so_gh_runs'),
@@ -168,7 +168,7 @@ REVERTS = [
     ('state ask: flagged on the item', 'hubcore/routed.py', 'state_ask=chase and not brief,', 'state_ask=False,', 'test_a_state_ask_is_not_a_review_and_the_owners_reply_closes_it'),
     ('state ask: the owner reply closes it', 'hubcore/routed.py', 'if i.get("state_ask") and ts > (i.get("routed_at") or 0):', 'if False:', 'test_a_state_ask_is_not_a_review_and_the_owners_reply_closes_it'),
     ('chase: an action on a PR or a brief marker is never a chase', 'hubcore/routed.py', 'if DELIVERABLE.search(text) or any(DIRECTIVE.match(x) for x in sentences):', 'if False:', 'test_an_action_on_a_pr_or_a_brief_marker_is_never_a_chase'),
-    ("doctor --check-clean ignores .git", "hubcore/cli.py", '".pytest_cache", ".git"}', '".pytest_cache"}', "test_check_clean_names_the_file_but_ignores_dot_git"),
+    ("doctor --check-clean ignores .git", "hubcore/cli.py", '".pytest_cache", ".git", ".ruff_cache"', '".pytest_cache", ".ruff_cache"', "test_check_clean_names_the_file_but_ignores_dot_git"),
     # audited bugs of 11-05
     ('own PR: a COMMENT at the head counts (item close)', 'hubcore/routed.py', '        and rev["state"].upper().startswith("COMMENT")\n', '        and False\n', 'test_a_comment_at_the_head_closes_a_review_item_on_the_hub_users_own_pr'),
     ('own PR: a COMMENT at the head counts (queue advance)', 'hubcore/routed.py', '        and rev["state"].upper().startswith("COMMENT")\n', '        and False\n', 'test_a_comment_at_the_head_advances_a_queue_on_the_hub_users_own_pr'),
@@ -204,12 +204,96 @@ REVERTS = [
     ('ack with a request cue is tracked', 'hubcore/routed.py', ' or REQUEST.search(text)):\n        return False  # "Ack', '):\n        return False  # "Ack', 'test_an_acknowledgement_with_a_request_is_still_tracked'),
     ('own PR: an empty-body COMMENT is a thread reply', 'hubcore/routed.py', '        and bool(rev["body"].strip())\n', '', 'test_an_inline_thread_reply_on_the_hub_users_own_pr_does_not_close_a_review_item'),
     ("mep missing: message says how to turn it off", "hubcore/status.py", " if exe is None else type(e).__name__", " if False else type(e).__name__", "test_mep_missing_says_how_to_turn_it_off"),
+    ("overrun blocks the stop", "hubcore/gate.py", "        reasons += slow.gate_lines(cfg, now)\n", "        pass\n", "tests/test_slow.py::test_an_overrun_blocks_the_stop_and_raises_a_slow_line_with_why"),
+    ("chase addresses an overrun", "hubcore/routed.py", '    item["addressed"] = [*item.get("addressed", []), now]\n', '    item["addressed"] = item.get("addressed", [])\n', "tests/test_slow.py::test_chasing_the_holder_addresses_an_overrun"),
+    ("missing estimate is defaulted", "hubcore/routed.py", "estimate_defaulted=not given", "estimate_defaulted=False", "tests/test_slow.py::test_a_brief_without_an_estimate_gets_the_usual_time_and_tells_the_hub"),
+    ("within the estimate stays quiet", "hubcore/slow.py", 'now > thresh and (now - clock)', 'True and (now - clock)', "tests/test_slow.py::test_a_job_within_its_estimate_stays_quiet"),
+    ("new estimate must exceed time spent", "hubcore/slow.py", "    if minutes <= spent:", "    if False:", "tests/test_slow.py::test_a_new_estimate_with_a_reason_addresses_it_and_keeps_the_old_one"),
+    ("unread messages are a why", "hubcore/slow.py", "        if unread:\n", "        if False:\n", "tests/test_slow.py::test_why_names_the_running_tool_and_unread_messages_but_never_their_text"),
+    ("same cause backs off", "hubcore/slow.py", "f\"{j['id']}:slow:{j['sig']}\"", "f\"{j['id']}:slow:{j['sig']}{now}\"", "tests/test_slow.py::test_the_same_cause_repeats_only_with_back_off"),
+    ("order estimate at first move", "hubcore/orders.py", "        elif first:\n", "        elif False:\n", "tests/test_slow.py::test_an_order_gets_an_estimate_at_its_first_move_and_the_eod_compares_it_with_the_actual"),
+    ("finished order takes no estimate", "hubcore/slow.py", '        if o["state"] not in ("open", "held"):\n', "        if False:\n", "tests/test_slow.py::test_an_order_gets_an_estimate_at_its_first_move_and_the_eod_compares_it_with_the_actual"),
+    ("watcher: dead hub with live jobs", "hubcore/watcher.py", "    if not hooks.bind_alive(b):\n", "    if False:\n", "tests/test_watcher.py::test_a_dead_hub_with_live_jobs_alerts_and_a_live_one_does_not"),
+    ("watcher: stuck hub", "hubcore/watcher.py", 'if sess.get("status") == "busy" and since', 'if False and since', "tests/test_watcher.py::test_a_hub_busy_far_too_long_is_stuck_and_a_recent_busy_is_not"),
+    ("watcher: unhandled alert", "hubcore/watcher.py", "r[\"ts\"] > act and", "True and", "tests/test_watcher.py::test_an_alert_the_hub_acted_on_is_not_flagged"),
+    ("watcher: peer waiting", "hubcore/watcher.py", "if mins >= int(cfg[\"watcher\"][\"waiting_min\"]):", "if False:", "tests/test_watcher.py::test_a_peer_waiting_on_a_prompt_is_reported_with_how_long"),
+    ("watcher: default desktop channel only for hub alerts", "hubcore/watcher.py", 'if str(a["key"]).startswith(USER_KEYS)]', 'if True]', "tests/test_watcher.py::test_the_default_desktop_channel_carries_hub_alerts_and_nothing_else"),
+    ("watcher: dead watch", "hubcore/watcher.py", "if started and time.time() - min(started) > grace and not gate.watch_live(cfg):", "if False:", "tests/test_watcher.py::test_a_dead_watch_with_live_work_alerts_and_a_running_one_does_not"),
+    ("watcher: dead cron", "hubcore/watcher.py", "if quiet_min > limit and cli.cron_configured():", "if False and cli.cron_configured():", "tests/test_watcher.py::test_a_watch_notices_a_cron_that_stopped_running_hubkit"),
+    ("excused: working holder", "hubcore/watcher.py", 'return "holder is working"', 'return None', "tests/test_watcher.py::test_a_holder_that_is_visibly_working_does_not_stall_and_one_gone_quiet_does"),
+    ("excused: blocked-on link", "hubcore/watcher.py", 'if item.get("blocked_on") in live:', 'if False:', "tests/test_watcher.py::test_a_job_blocked_on_another_does_not_alarm_until_the_link_is_cleared"),
+    ("short asks are tracked", "hubcore/routed.py", "    return is_short_ask(text)\n", "    return False\n", "tests/test_watcher.py::test_short_messages_are_tracked_only_when_they_ask_for_something"),
+    ("stall alert names the holder state", "hubcore/routed.py", "; holder: {slow_why(cfg, i, now)}", "", "tests/test_watcher.py::test_a_stall_alert_names_what_the_holder_is_doing"),
+    ("PR key includes the repo", "hubcore/routed.py", "    return ka == kb or", "    return pr_num(a) == pr_num(b) or", "tests/test_watcher.py::test_the_same_number_in_two_repos_is_two_prs"),
+    ("repo-qualified refs", "hubcore/routed.py", "    qualified, text = _repo_refs(cfg, text)\n", "    qualified: list[str] = []\n", "tests/test_watcher.py::test_a_pr_number_is_looked_up_in_its_own_repo_not_the_default_one"),
+    ("own commit is not a stray push", "hubcore/routed.py", 'elif owner_is_author(cfg, i["owner"], info.get("head_author", "")):', 'elif False:', "tests/test_watcher.py::test_a_head_moved_by_the_owners_own_commit_is_progress_not_a_stall"),
+    ("order holder from its link only", "hubcore/slow.py", 'if link else "unknown"', 'if link else "hub"', "tests/test_watcher.py::test_an_orders_holder_is_its_linked_item_and_unknown_without_a_link"),
+    ("cron tick sees routed-only jobs", "hubcore/cli.py", "watcher.live_jobs(cfg, Orders(cfg))", "Orders(cfg).live()", "tests/test_watcher.py::test_cron_alone_reports_a_dead_hub_that_holds_only_routed_jobs"),
+    ("cron alone notifies on a dead hub", "hubcore/cli.py", "watcher.live_jobs(cfg, Orders(cfg))", "Orders(cfg).live()", "tests/test_watcher.py::test_cron_alone_notifies_the_desktop_when_the_hub_is_dead"),
+    ("cron that never ran is flagged", "hubcore/watcher.py", "if quiet_min > limit and", "if f.exists() and quiet_min > limit and", "tests/test_watcher.py::test_a_cron_that_never_ran_is_flagged_once_work_has_waited_past_the_limit"),
+    ("waiting status counts as waiting", "hubcore/watcher.py", 'WAITING_STATES = ("waiting", "blocked", "needs_input", "permission")', 'WAITING_STATES = ("blocked",)', "tests/test_watcher.py::test_the_real_peer_session_shape_waiting_for_input_is_reported"),
+    ("watcher lines in the status block", "hubcore/status.py", '        out += st.get("watcher", [])\n', "", "tests/test_watcher.py::test_watcher_findings_reach_the_hub_status_block"),
+    ("lock excludes", "hubcore/compat.py", "        fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))\n        return True", "        return True", "tests/test_compat.py::test_a_lock_held_by_another_process_blocks_until_it_exits"),
+    ("ps start time", "hubcore/compat.py", '    return _ps("-o", "lstart=", "-p", str(pid))', "    return None", "tests/test_compat.py::test_without_proc_the_ps_path_gives_the_same_answers"),
+    ("ps parent", "hubcore/compat.py", '    out = _ps("-o", "ppid=", "-p", str(pid))', '    out = None', "tests/test_compat.py::test_without_proc_the_ps_path_gives_the_same_answers"),
+    ("proc start of a dead pid", "hubcore/compat.py", "        except (OSError, IndexError):\n            return None\n    return _ps(", "        except ZeroDivisionError:\n            return None\n    return _ps(", "tests/test_compat.py::test_proc_start_names_a_live_process_and_forgets_a_dead_one"),
+    ("utf-8 stdio", "hubcore/compat.py", 'reconf(encoding="utf-8", errors="replace")', "pass", "tests/test_compat.py::test_stdio_is_utf8_whatever_the_console_code_page_is"),
+    ('blocker with no fix holds the gate', 'hubcore/orders.py', '        if not b["fix"]:\n            return f"{o[\'id\']} is blocked on', '        if False:\n            return f"{o[\'id\']} is blocked on', "tests/test_blockers.py::test_a_blocker_without_a_fix_blocks_the_stop_and_names_it"),
+    ('fix past its limit holds the gate', 'hubcore/orders.py', '        if age > self.fix_limit_min():', '        if False:', "tests/test_blockers.py::test_a_fix_running_clears_the_gate_until_it_outlives_its_limit"),
+    ('notes do not reset idle on a blocked order', 'hubcore/orders.py', '        if o.get("blocker"):  # notes', '        if False:  # notes', "tests/test_blockers.py::test_only_a_recorded_result_clears_a_blocker_and_notes_do_not_reset_idle"),
+    ('only a result clears a blocker', 'hubcore/orders.py', '            o["blocker"] = None  # only a recorded result clears a blocker', '            pass', "tests/test_blockers.py::test_only_a_recorded_result_clears_a_blocker_and_notes_do_not_reset_idle"),
+    ('tick alerts on a blocker', 'hubcore/status.py', '        if why:\n            found.append', '        if False:\n            found.append', "tests/test_blockers.py::test_the_tick_alerts_on_a_blocker_with_no_fix"),
+    ('blocked claim needs a fix on record', 'hubcore/gate.py', '    if claim and not any(', '    if False and not any(', "tests/test_blockers.py::test_a_message_calling_an_open_order_blocked_is_held_until_a_fix_is_on_record"),
+    ('blocked words from intents.toml', 'hubcore/gate.py', '.get("stop_gate", {}).get("blocked_words", BLOCKED_WORDS)', '.get("stop_gate", {}).get("x", BLOCKED_WORDS)', "tests/test_blockers.py::test_the_blocked_words_come_from_intents_toml"),
+    ('claim needs an open order', 'hubcore/gate.py', '    claim = blocked_claim(cfg, last) if live else None', '    claim = blocked_claim(cfg, last)', "tests/test_blockers.py::test_a_blocked_claim_with_no_open_order_is_not_held"),
+    ('stop-loss needs a result', 'hubcore/gate.py', '        if orders.stoploss_pending(o):', '        if False:', "tests/test_blockers.py::test_after_a_stop_loss_only_a_recorded_result_lets_the_turn_end"),
+    ('queue warning', 'hubcore/hooks.py', '    if not item.get("behind") or', '    if True or', "tests/test_blockers.py::test_a_second_job_to_a_busy_owner_while_an_order_is_open_warns_of_the_queue"),
+    ('queue warning only with an open order', 'hubcore/hooks.py', ' or not any(o["state"] == "open" for o in Orders(cfg).live()):', ':', "tests/test_blockers.py::test_a_second_job_with_no_open_order_is_not_warned"),
+    ("doctor --check-clean ignores tool caches", "hubcore/cli.py", '".git", ".ruff_cache", ".mypy_cache"} & set(', '".git"} & set(', "test_check_clean_names_the_file_but_ignores_dot_git"),
+    ("negated wording is not a blocked claim", "hubcore/gate.py", "not NEGATION.search(low[: m.start()])", "True", "tests/test_blockers.py::test_negated_wording_is_not_a_blocked_claim_but_a_true_one_still_is"),
+    ("owner report closes a non-review item", "hubcore/routed.py", '                    i["answered"] = True  # the owner reported', '                    pass  # the owner reported', "tests/test_peer_reports.py::test_a_result_message_from_the_owner_closes_a_non_review_item_and_nothing_stalls"),
+    ("queued report closes it too", "hubcore/routed.py", "            return peer_name(text), text", '            return peer_name(text), ""', "tests/test_peer_reports.py::test_a_queued_result_message_closes_it_too"),
+    ("blocker or question is not a result", "hubcore/routed.py", "and not PEER_NOT_RESULT.search(body)", "and True", "tests/test_peer_reports.py::test_a_question_or_a_blocker_from_the_owner_is_heard_but_does_not_close"),
+    ("review item is left to the PR", "hubcore/routed.py", 'if from_owner and not i.get("review") and', "if from_owner and", "tests/test_peer_reports.py::test_a_report_on_a_review_item_leaves_it_to_the_pr_review"),
+    ("only the owner's report closes", "hubcore/routed.py", "from_owner = bool(name) and name.lower() == i[\"owner\"].lower()", "from_owner = bool(name)", "tests/test_peer_reports.py::test_a_report_from_someone_else_closes_nothing"),
+    ("several items: the report must name one", "hubcore/routed.py", "    return len(mine) == 1 or any(", "    return True or any(", "tests/test_peer_reports.py::test_an_owner_with_two_items_closes_only_the_one_the_report_names"),
+    ('asks ls span filter', 'hubcore/lessons.py', 'if now - r["ts"] <= since_s]', 'if True]', "tests/test_lessons.py::test_asks_ls_rejects_a_bad_span_and_honours_a_short_one"),
+    ('asks ls bad span', 'hubcore/lessons.py', '    if not m:\n        raise ValueError', '    if False:\n        raise ValueError', "tests/test_lessons.py::test_asks_ls_rejects_a_bad_span_and_honours_a_short_one"),
+    ("recent prompts cap", "hubcore/hooks.py", 'if len(rows) > 2000:  # `hubkit asks ls` reads this file: keep a day or more of the user\'s words\n        store.write_atomic(recent_path, "".join(json.dumps(r) + "\\n" for r in rows[-1000:]))', 'if len(rows) > 200:\n        store.write_atomic(recent_path, "".join(json.dumps(r) + "\\n" for r in rows[-50:]))', "tests/test_lessons.py::test_asks_ls_keeps_the_oldest_prompt_within_the_span_after_many_prompts"),
+    ('done turn needs the asks re-read', 'hubcore/lessons.py', '    if prompts[-1]["ts"] <= max(swept, _last_work_done(cfg, now)):\n        return None', '    if True:\n        return None', "tests/test_lessons.py::test_a_done_turn_with_an_unread_newer_prompt_is_blocked_until_asks_ls_runs"),
+    ('asks ls marks the sweep', 'hubcore/lessons.py', '    store.write_atomic(store.state(cfg) / "asks-swept", str(time.time()))\n', '', "tests/test_lessons.py::test_a_done_turn_with_an_unread_newer_prompt_is_blocked_until_asks_ls_runs"),
+    ('only a done message is held', 'hubcore/lessons.py', '    if not DONE_WORDS.search(last):\n        return None', '    if False:\n        return None', "tests/test_lessons.py::test_a_turn_that_does_not_say_done_is_not_held_for_the_asks"),
+    ('bare frustration patterns', 'intents.example.toml', '(useless|stupid|dumb|idiot|wtf|r u (dumb|kidding|sleeping))', '(zzzz)', "tests/test_lessons.py::test_bare_frustration_is_a_correction"),
+    ('bare wrong/no pattern', 'intents.example.toml', '(?i)^\\\\W*(wrong|no+|nope)[!. ]*$', '(?i)^zzzz$', "tests/test_lessons.py::test_bare_frustration_is_a_correction"),
+    ('priority listed first', 'hubcore/status.py', 'for kind in ("priority", *(k for k in WORK_KINDS if k != "priority")):', 'for kind in WORK_KINDS:', "tests/test_lessons.py::test_priority_work_is_listed_before_active_work_and_flagged_when_active_runs_ahead"),
+    ('active ahead of priority flagged', 'hubcore/status.py', 'if kind == "priority" and any(', 'if False and any(', "tests/test_lessons.py::test_priority_work_is_listed_before_active_work_and_flagged_when_active_runs_ahead"),
+    ('decisions in the block', 'hubcore/status.py', '        if st.get("decisions"):', '        if False:', "tests/test_lessons.py::test_the_last_decisions_appear_in_the_status_block"),
+    ('decisions tail is five lines', 'hubcore/status.py', 'return [store.safe(x, 200) for x in lines[-n:]]', 'return [store.safe(x, 200) for x in lines]', "tests/test_lessons.py::test_the_last_decisions_appear_in_the_status_block"),
+    ('stale finished agent alert', 'hubcore/watcher.py', '        if i.get("tool_use_id") and i.get("reported") and (now - float(i["reported"])) / 60 > limit', '        if False', "tests/test_lessons.py::test_a_finished_review_agent_still_listed_raises_one_alert_and_a_fresh_one_does_not"),
+    ('fresh finished agent is not stale', 'hubcore/watcher.py', '(now - float(i["reported"])) / 60 > limit', 'True', "tests/test_lessons.py::test_a_finished_review_agent_still_listed_raises_one_alert_and_a_fresh_one_does_not"),
+    ('gone claim needs a lookup', 'hubcore/lessons.py', '    if not hit or lookups_this_turn(transcript) != 0:', '    if not hit:', "tests/test_lessons.py::test_a_gone_claim_with_no_lookup_this_turn_is_held_and_a_checked_one_passes"),
+    ('negated claim is not a claim', 'hubcore/lessons.py', 'any(_asserted(s.lower(), w.lower()) for w in words)', 'any(w.lower() in s.lower() for w in words)', "tests/test_lessons.py::test_a_gone_claim_with_no_lookup_this_turn_is_held_and_a_checked_one_passes"),
+    ("a person's call needs a check", 'hubcore/lessons.py', '"a person\'s call", ', '', "tests/test_lessons.py::test_relaying_a_persons_call_unchecked_is_held"),
+    ('brief forbidding the fix is warned', 'hubcore/lessons.py', '            if shared:', '            if False:', "tests/test_lessons.py::test_a_brief_that_forbids_the_step_an_order_is_blocked_on_is_warned"),
+    ('unrelated prohibition is not warned', 'hubcore/lessons.py', '            shared = _keys(line) & _keys(b["on"] + " " + b["fix"])', '            shared = _keys(line)', "tests/test_lessons.py::test_a_brief_that_forbids_something_else_is_not_warned"),
+    ('merge guard warns', 'hubcore/lessons.py', '    if num is None:\n        return None\n    now', '    if True:\n        return None\n    now', "tests/test_lessons.py::test_an_unasked_merge_is_warned_and_never_denied"),
+    ('a merge order silences the guard', 'hubcore/lessons.py', '        if o["state"] == "open" and (re.search(', '        if False and (re.search(', "tests/test_lessons.py::test_a_hand_opened_merge_order_naming_the_pr_silences_the_guard"),
+    ('a typed word silences the guard', 'hubcore/lessons.py', '    for r in recent_prompts(cfg, 7200, now):\n        if re.search', '    for r in []:\n        if re.search', "tests/test_lessons.py::test_a_merge_warning_follows_the_typed_word_when_no_order_is_open"),
+    ("a wait the user ordered is not a blocker", "hubcore/gate.py", " and not USER_WAIT.search(sentence):", ":", "tests/test_blockers.py::test_a_wait_the_user_ordered_is_not_a_blocker_to_solve"),
+    ("skills install ignores caches", "hubcore/install.py", "shutil.copytree(p, dest, dirs_exist_ok=True, ignore=IGNORE)", "shutil.copytree(p, dest, dirs_exist_ok=True)", "tests/test_install.py::test_skills_install_lays_down_three_working_skills"),
+    ("skills install refreshes", "hubcore/install.py", "shutil.copytree(p, dest, dirs_exist_ok=True, ignore=IGNORE)", "shutil.copytree(p, dest, ignore=IGNORE)", "tests/test_install.py::test_skills_install_twice_refreshes_the_copies"),
+    ("merge guard only on request", "hubcore/install.py", "if merge_guard else ())]", "if True else ())]", "tests/test_install.py::test_hooks_block_is_valid_settings_json_with_every_event"),
+    ("doctor warns on stale intents", "hubcore/cli.py", "    gaps = intents_gaps(cfg)\n    if gaps:", "    gaps = intents_gaps(cfg)\n    if False:", "tests/test_install.py::test_doctor_warns_when_the_users_intents_lack_a_section_the_example_has"),
+    ("unordered chase gets the job lines", "hubcore/hooks.py", "or orders.live() or len(text) >", "or True or len(text) >", "tests/test_blockers.py::test_a_chase_with_no_order_prints_the_job_lines"),
 ]
 
 
 def main() -> int:
     bad = 0
+    only = sys.argv[1] if len(sys.argv) > 1 else ""  # optional: run only entries whose test contains this text
     for name, rel, old, new, test in REVERTS:
+        if only not in test:
+            continue
         with tempfile.TemporaryDirectory() as td:
             copy = Path(td) / "scripts"
             shutil.copytree(SCRIPTS, copy, ignore=shutil.ignore_patterns("__pycache__"))
@@ -225,7 +309,7 @@ def main() -> int:
             env = dict(os.environ, HUBKIT_SCRIPTS=str(copy))
             if rel.endswith(".toml"):
                 env["HUBKIT_TEST_INTENTS"] = str(f)
-            r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-x", T + test, "-p", "no:cacheprovider"],
+            r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-x", test if "::" in test else T + test, "-p", "no:cacheprovider"],
                                cwd=HERE.parent, env=env, capture_output=True, text=True)
         if r.returncode in (4, 5):  # the named test does not exist: that is no proof
             print(f"BROKEN  {name}: test not collected ({test})", flush=True)

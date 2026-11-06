@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for looking. hubkit is small on purpose: standard library only, Python 3.14, Linux.
+Thanks for looking. hubkit is small on purpose: standard library only, Python 3.14. Linux is tested; macOS and Windows are in the CI matrix but unproven (see the README).
 
 ## Set up and run the checks
 

@@ -11,6 +11,27 @@ import pytest
 SKILL = Path(__file__).resolve().parent.parent
 SCRIPTS = Path(os.environ.get("HUBKIT_SCRIPTS", SKILL / "scripts"))
 INTENTS = Path(os.environ.get("HUBKIT_TEST_INTENTS", SKILL / "intents.example.toml"))
+sys.path.insert(0, str(SCRIPTS))
+from hubcore import compat  # noqa: E402
+
+# Tests whose fake `gh`, `crontab` or notifier is a /bin/sh script cannot run where there is no sh on the PATH.
+# They are skipped on Windows (and say so), never silently passed.
+SH_SHIMS = ("#!/bin/sh", "fake_gh(", "fake_crontab(", "sink(")
+
+
+def pytest_collection_modifyitems(config, items):
+    if sys.platform != "win32":
+        return
+    import inspect
+
+    skip = pytest.mark.skip(reason="needs a POSIX sh shim for gh/crontab/notifier; not ported to Windows")
+    for item in items:
+        try:
+            src = inspect.getsource(item.function)
+        except (OSError, TypeError):
+            continue
+        if any(m in src for m in SH_SHIMS):
+            item.add_marker(skip)
 
 
 class Env:
@@ -46,9 +67,9 @@ class Env:
                               capture_output=True, text=True, env=self.env(**extra), timeout=20)
 
     def session(self, sid="sess-hub", kind="interactive", name="hub-test") -> subprocess.Popen:
-        p = subprocess.Popen(["sleep", "300"])
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
         self.procs.append(p)
-        stat = Path(f"/proc/{p.pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+        stat = compat.proc_start(p.pid)
         (self.sessions / f"{p.pid}.json").write_text(json.dumps(
             {"pid": p.pid, "sessionId": sid, "procStart": stat, "kind": kind, "name": name,
              "entrypoint": "cli"}))

@@ -7,7 +7,6 @@ import importlib.util
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import time
@@ -47,7 +46,7 @@ def next_work_id(sd: Path, items: list[dict]) -> str:
     Call it under the work lock."""
     seq = sd / "work.seq"
     try:
-        last = int(seq.read_text().strip())
+        last = int(seq.read_text(encoding="utf-8").strip())
     except ValueError, OSError:
         archived = [r.get("id", "") for f in (sd / "archive").glob("archive_*.jsonl") for r in store.read_rows(f)[0] if r.get("type") == "work"]
         last = max([int(x[1:]) for x in archived if re.fullmatch(r"W\d+", str(x))] + [0])
@@ -56,7 +55,7 @@ def next_work_id(sd: Path, items: list[dict]) -> str:
     return f"W{nxt}"
 
 
-def work_add(cfg: dict, kind: str, title: str, owner: str = "", note: str = "") -> dict:
+def work_add(cfg: dict, kind: str, title: str, owner: str = "", note: str = "", estimate: int | None = None) -> dict:
     """Add a live work item and return it."""
     from .redact import redact_obj
 
@@ -66,7 +65,8 @@ def work_add(cfg: dict, kind: str, title: str, owner: str = "", note: str = "") 
     with store.locked(sd / "work.lock"):
         items = work_load(sd)
         item = redact_obj({"id": next_work_id(sd, items), "kind": kind, "title": title, "owner": owner,
-                           "note": note, "added": time.time()})
+                           "note": note, "added": time.time(),
+                           **({"estimate_min": estimate, "estimates": [{"t": time.time(), "min": estimate, "source": "brief"}]} if estimate else {})})
         items.append(item)
         work_save(sd, items)
     return item
@@ -116,7 +116,7 @@ def mep_state(cfg: dict, prev: dict | None = None) -> dict:
     try:
         if exe is None:
             raise FileNotFoundError("mep not found")
-        r = subprocess.run([exe, "status", "--json"], capture_output=True, text=True,
+        r = subprocess.run([exe, "status", "--json"], capture_output=True, encoding="utf-8", errors="replace",
                            timeout=cfg["mep"]["timeout_s"], env=env)
         titles = [i.get("title", "") for i in json.loads(r.stdout)["on_you"]]
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as e:
@@ -218,8 +218,42 @@ def build_status(cfg: dict) -> dict:
         "version": VERSION, "built": time.time(), "work": work_load(sd),
         "orders": [orders.status_line(o) for o in orders.live()],
         "mep": mep_state(cfg, (read_status(cfg) or {}).get("mep")), "learnings": recent, "hook_errors": hook_errors(cfg),
-        "extra": extra,
+        "extra": extra, "jobs": job_records(cfg, orders), "watcher": watcher_lines(cfg, orders), "decisions": decisions_tail(cfg),
     }
+
+
+def decisions_tail(cfg: dict, n: int = 5) -> list[str]:
+    """The last lines of the active slug's decisions.md (`[think] decisions`), so a ruling survives a restart."""
+    path = cfg["think"]["decisions"]
+    if not path:
+        return []
+    try:
+        lines = [x.strip() for x in Path(path).expanduser().read_text(encoding="utf-8").splitlines() if x.strip()]
+    except OSError:
+        return []
+    return [store.safe(x, 200) for x in lines[-n:]]
+
+
+def watcher_lines(cfg: dict, orders: Orders) -> list[str]:
+    """What the outside watcher finds right now, for the hub to see (a failure is logged and shows nothing)."""
+    from . import watcher
+
+    try:
+        return [f"watcher: {a['msg']}" for a in watcher.checks(cfg, orders, time.time())]
+    except Exception as e:
+        store.append_row(config.state_dir(cfg) / "hook-errors.jsonl", {"where": "watcher_lines", "error": repr(e)[:200]})
+        return []
+
+
+def job_records(cfg: dict, orders: Orders) -> list[dict]:
+    """The live job records (see slow.py). A failure is logged and leaves the block without them."""
+    from . import slow
+
+    try:
+        return slow.jobs(cfg, orders, time.time(), deep=True)
+    except Exception as e:
+        store.append_row(config.state_dir(cfg) / "hook-errors.jsonl", {"where": "job_records", "error": repr(e)[:200]})
+        return []
 
 
 def write_status(cfg: dict) -> dict:
@@ -249,12 +283,15 @@ def render_block(cfg: dict, orders: Orders, st: dict | None, now: float | None =
     else:
         age = int((now - st["built"]) / 60)
         out.append(f"status built {age} min ago" + (f": UNVERIFIED, stale over {STALE_MIN} min" if age > STALE_MIN else ""))
-        for kind in WORK_KINDS:
+        for kind in ("priority", *(k for k in WORK_KINDS if k != "priority")):
             if kind == "routed":
                 continue  # listed below with owner, age and last-heard
             mine = [i for i in st["work"] if i["kind"] == kind]
             if mine:
-                out.append(f"{kind}: " + "; ".join(f"{i['id']} {i['title']}" for i in mine))
+                ahead = ""
+                if kind == "priority" and any(i["kind"] == "active" for i in st["work"]):
+                    ahead = " | AHEAD: active work is running while this waits; switch, or say why not"
+                out.append(f"{kind}: " + "; ".join(f"{i['id']} {i['title']}" for i in mine) + ahead)
         from . import routed
 
         out += routed.block_lines(cfg, st["work"], now)
@@ -266,6 +303,15 @@ def render_block(cfg: dict, orders: Orders, st: dict | None, now: float | None =
             out.append(f"mep: {m['state']} ({m.get('why', '')})")
         he = st["hook_errors"]
         out.append(f"hook errors in scan window: {he['count']}" + (f" (last {he['last']})" if he["last"] else ""))
+        from . import gate, slow
+
+        out += slow.block_lines(st.get("jobs", []), now)
+        if st.get("jobs") and not gate.watch_live(cfg):
+            out.append(f"hubkit watch is NOT running with live jobs. NEXT: start in the background: {gate.WATCH_CMD}")
+        if st.get("decisions"):
+            out.append("recent decisions (decisions.md):")
+            out += ["  " + x for x in st["decisions"]]
+        out += st.get("watcher", [])
         out += st.get("extra", [])
         if st["learnings"]:
             out.append("recent learnings:")
@@ -309,20 +355,27 @@ def evaluate(cfg: dict, orders: Orders, hook_err: dict, now: float) -> list[dict
             continue
         spec = orders.intents["kinds"].get(o["kind"], {})
         age = (now - o["opened"]) / 60
-        if not o["moves"] and age > spec.get("first_action_min", 5):
+        if not (o["moves"] or o["results"]) and age > spec.get("first_action_min", 5):
             found.append({"key": f"{o['id']}:no_first_action",
                           "msg": f"{o['id']} {o['kind']}: no first action after {int(age)} min"})
         idle = (now - orders.last_movement(o)) / 60
         if idle > spec.get("stall_min", 10):
             found.append({"key": f"{o['id']}:stalled",
                           "msg": f"{o['id']} {o['kind']}: no movement for {int(idle)} min"})
+        why = orders.blocker_problem(o, now)
+        if why:
+            found.append({"key": f"{o['id']}:blocker:{'nofix' if not o['blocker']['fix'] else 'stale'}",
+                          "msg": f"{why}. NEXT: start the fix on a free owner and run: hubkit order block {o['id']} --on \"..\" --fix \"..\" "
+                                 f"--holder <who>; when it ran: hubkit order result {o['id']} --note \"..\""})
         if o.get("deadline") and now > o["deadline"]:
             found.append({"key": f"{o['id']}:deadline",
                           "msg": f"{o['id']} {o['kind']}: past its deadline {store.clock(cfg, o['deadline'])}"})
     try:
-        from . import routed
+        from . import routed, slow, watcher
 
         found += routed.alerts(cfg, now)
+        found += slow.alerts(cfg, orders, now)
+        found += watcher.checks(cfg, orders, now)
     except Exception as e:  # routed tracking must not break the tick
         found.append({"key": "routed:failed", "msg": f"routed-work check failed: {type(e).__name__}"})
     if hook_err["count"]:
@@ -376,13 +429,10 @@ def tick(cfg: dict, notify: bool = True, now: float | None = None) -> list[dict]
                 new.append(a)
         write_status(cfg)
         store.touch_seen(sd, "tick")
-    cmd = cfg["tools"]["notify_cmd"]
-    if notify and cmd and new:
-        try:
-            subprocess.run([*shlex.split(cmd), "hubkit: " + "; ".join(a["msg"] for a in new)],
-                           timeout=5, check=False)
-        except (OSError, subprocess.SubprocessError):
-            pass
+    if notify and new:
+        from . import watcher
+
+        watcher.notify(cfg, new)
     return new
 
 
@@ -454,6 +504,8 @@ def glance(cfg: dict, day: str) -> list[str]:
 def reflection(cfg: dict, day: str) -> list[str]:
     """Self-reflection from facts, no model: orders that needed chasing or stalled, still open."""
     orders = Orders(cfg)
+    from . import slow
+
     lines = ["Self-reflection (from the record):"]
     for o in orders.all().values():
         if store.day_of(cfg, o["opened"]) != day:
@@ -464,7 +516,7 @@ def reflection(cfg: dict, day: str) -> list[str]:
             lines.append(f"  still {o['state']}: {o['id']} {o['kind']}")
     if len(lines) == 1:
         lines.append("  no order needed a chase and none is left open")
-    return lines
+    return lines + slow.reflection_lines(cfg, day)
 
 
 LIVE = ("open", "unconfirmed", "held")  # expired orders are finished

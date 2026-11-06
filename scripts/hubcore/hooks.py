@@ -11,25 +11,22 @@ import traceback
 from pathlib import Path
 from typing import TypeGuard
 
-from . import config, gate, routed, store
+from . import compat, config, gate, lessons, routed, store
 from .orders import Orders, hook_intake
 from .redact import redact
 from .status import read_status, render_block
 
-# ---- bind: hub identity = session id + pid + procStart, liveness read from /proc ----
+# ---- bind: hub identity = session id + pid + procStart, liveness read through compat ----
 
 def proc_start(pid: int) -> str | None:
-    """Start time of a process from /proc (Linux), or None when it is gone."""
-    try:
-        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
-    except (OSError, IndexError):
-        return None
+    """Start-time token of a live process (see compat), or None when it is gone."""
+    return compat.proc_start(pid)
 
 
 def session_file(cfg: dict, pid: int) -> dict | None:
     """The Claude Code session file for a pid, or None."""
     try:
-        return json.loads((config.sessions_dir(cfg) / f"{pid}.json").read_text())
+        return json.loads((config.sessions_dir(cfg) / f"{pid}.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
 
@@ -42,10 +39,10 @@ def find_session_pid(cfg: dict) -> int | None:
             return None
         if session_file(cfg, pid):
             return pid
-        try:
-            pid = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1])
-        except (OSError, IndexError, ValueError):
+        parent = compat.parent_pid(pid)
+        if parent is None:
             return None
+        pid = parent
     return None
 
 
@@ -57,7 +54,7 @@ def bind_path(cfg: dict) -> Path:
 def read_bind(cfg: dict) -> dict | None:
     """The hub bind record, or None when absent or unreadable."""
     try:
-        return json.loads(bind_path(cfg).read_text())
+        return json.loads(bind_path(cfg).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
 
@@ -166,14 +163,26 @@ def correction_line(orders: Orders, sd: Path, text: str, now: float) -> str:
                     why = "repeated instruction"
                     break
     store.append_row(recent_path, {"text": store.safe(text, 300), "ts": now})
-    if len(rows) > 200:
-        store.write_atomic(recent_path, "".join(json.dumps(r) + "\n" for r in rows[-50:]))
+    if len(rows) > 2000:  # `hubkit asks ls` reads this file: keep a day or more of the user's words
+        store.write_atomic(recent_path, "".join(json.dumps(r) + "\n" for r in rows[-1000:]))
     if not why:
         return ""
     quote = redact(text)[0][:200]
     return (f'hubkit CORRECTION ({why}): record it this turn. Quote: "{quote}". '
             "Run learn.py add --class <existing-or-new-kebab> --gate <G1..G8> --quote <the words> "
             "--situation .. --wrong .. --right .. --evidence .. (reuse a class from the block if it is the same mistake).")
+
+
+def unordered_chase_lines(cfg: dict, orders: Orders, text: str, now: float) -> list[str]:
+    """A short chase ("any progress?") with no order live: nothing counts it, so answer it from the job list."""
+    intake = orders.intents.get("intake", {})
+    chase = intake.get("chase")
+    if not chase or orders.live() or len(text) > int(intake.get("verb_max_chars", 120)) or not re.search(chase, text):
+        return []
+    from . import slow
+
+    jobs = slow.jobs(cfg, orders, now)
+    return ["hubkit: no order is live, so this chase is on the job list:", *(slow.block_lines(jobs, now) or ["no live job either: say so plainly"])]
 
 
 def hook_prompt(cfg: dict, payload: dict) -> str:
@@ -187,12 +196,12 @@ def hook_prompt(cfg: dict, payload: dict) -> str:
     now = time.time()
     routed.scan_transcript(cfg, payload.get("transcript_path"))  # heard-from before the stall clock is read
     if peer := routed.peer_name(text):  # a peer message that did reach this hook: heard now, opens nothing
-        routed.heard(cfg, [(now, peer, "")])
+        routed.heard(cfg, [(now, peer, text)])
     if not store.is_human(text, origin):
         return ""
     orders = Orders(cfg)
     corr = correction_line(orders, sd, text, now)
-    return "\n".join([*routed.prompt_lines(cfg, now), *hook_intake(orders, text), *([corr] if corr else [])])
+    return "\n".join([*routed.prompt_lines(cfg, now), *hook_intake(orders, text), *unordered_chase_lines(cfg, orders, text, now), *([corr] if corr else [])])
 
 
 def _answer_text(resp: object) -> str:
@@ -222,11 +231,38 @@ def hook_routed(cfg: dict, payload: dict) -> str:
         return ""
     store.touch_seen(store.state(cfg), "routed")
     routed.scan_transcript(cfg, payload.get("transcript_path"))
+    ti = payload.get("tool_input") or {}
+    forbids = lessons.brief_forbids_fix(cfg, str(ti.get("message") or ti.get("prompt") or ""))
     item = routed.from_tool(cfg, tool, payload.get("tool_input") or {}, payload.get("tool_response"),
                             str(payload.get("tool_use_id") or ""))
     if not item:
+        return forbids or ""
+    out = f"hubkit: tracking {item['id']} routed to {item['owner']}; stall clock {routed.opts(cfg)['stall_min']} min"
+    if item.get("estimate_min") is not None:
+        out += f"; estimate {item['estimate_min']:g}m"
+        if item.get("estimate_defaulted"):
+            out += (f" DEFAULTED ({item.get('estimate_basis', '')}), the brief had no `Estimate: <n>m` line. "
+                    f"Set it: hubkit work estimate {item['id']} --minutes N --why \"...\"")
+    out += queue_warning(cfg, item)
+    return out + (f"\n{forbids}" if forbids else "")
+
+
+def hook_pretool(cfg: dict, payload: dict) -> str:
+    """PreToolUse on Bash: warn (never deny) about a `gh pr merge` nobody ordered."""
+    if not is_hub(cfg, payload) or payload.get("tool_name") != "Bash":
         return ""
-    return f"hubkit: tracking {item['id']} routed to {item['owner']}; stall clock {routed.opts(cfg)['stall_min']} min"
+    warning = lessons.merge_warning(cfg, str((payload.get("tool_input") or {}).get("command") or ""))
+    if not warning:
+        return ""
+    return json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": warning}})
+
+
+def queue_warning(cfg: dict, item: dict) -> str:
+    """A new job sent to an owner who already holds another live job, while an order is open: it queues behind that job."""
+    if not item.get("behind") or len(item.get("events", [])) != 1 or not any(o["state"] == "open" for o in Orders(cfg).live()):
+        return ""
+    return (f"\nhubkit WARNING: {item['owner']} already holds {', '.join(item['behind'])}; {item['id']} queues behind it while an order is open. "
+            "An urgent step never waits in a busy agent's queue. NEXT: send it to a free owner now")
 
 
 def hook_stop(cfg: dict, payload: dict) -> str:
@@ -239,7 +275,7 @@ def hook_stop(cfg: dict, payload: dict) -> str:
     store.touch_seen(sd, "stop")
     routed.scan_transcript(cfg, payload.get("transcript_path"))
     last = (payload.get("last_assistant_message") or "").strip()
-    reasons = gate.stop_reasons(cfg, last)
+    reasons = gate.stop_reasons(cfg, last, transcript=payload.get("transcript_path"))
     if not reasons:
         return ""
     store.append_row(sd / "stop-guard.jsonl", {"blocked": True, "reasons": [store.safe(r, 300) for r in reasons]})
@@ -259,7 +295,7 @@ def hook_record(cfg: dict, payload: dict) -> str:
     return ""
 
 
-HOOKS = {"session": hook_session, "prompt": hook_prompt, "stop": hook_stop, "record": hook_record, "answer": hook_answer, "routed": hook_routed}
+HOOKS = {"session": hook_session, "prompt": hook_prompt, "stop": hook_stop, "record": hook_record, "answer": hook_answer, "routed": hook_routed, "pretool": hook_pretool}
 
 
 def main(event: str) -> int:

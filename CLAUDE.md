@@ -19,6 +19,8 @@ scripts/hubcore/
   orders.py               order ledger, intake, evidence-checked close
   routed.py               routed-work items: record/chase/ladder, gh reads, heard-from, close
   gate.py                 Stop-gate reasons
+  slow.py                 job records, estimates, usual-time baseline, SLOW check, estimate vs actual
+  watcher.py              hub/peer/watch/cron checks, desktop notify, false-alarm excuses, blocked-on link
   status.py               work items, tick/watch, status block, EOD
   store.py                state dir, locked/atomic writes, row IO
   redact.py               secret redaction (every write passes through it)

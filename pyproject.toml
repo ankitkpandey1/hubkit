@@ -1,17 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
-name = "hubkit"
+name = "hubkit-cli"
 version = "0.1.0"
-description = "Order clocks, routed-work tracking, a watchdog and a stop gate for a coordinating Claude Code session that learns from its user's corrections."
+description = "Session supervisor for Claude Code: hooks-based multi-agent orchestration with order clocks, routed-work tracking, a watchdog and a stop gate, standard library only."
 readme = "README.md"
 requires-python = ">=3.14"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Ankit Kumar Pandey" }]
-keywords = ["claude-code", "agents", "orchestration", "hooks", "adaptive"]
+keywords = ["claude-code", "agents", "multi-agent", "orchestration", "agent-coordination", "hooks", "supervisor", "watchdog", "adaptive"]
 dependencies = []
 
 [project.urls]
 Repository = "https://github.com/ankitkpandey1/hubkit"
+Documentation = "https://github.com/ankitkpandey1/hubkit/tree/main/docs"
+Issues = "https://github.com/ankitkpandey1/hubkit/issues"
+
+[project.scripts]
+hubkit = "hubcore.cli:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["scripts/hubcore"]
+sources = ["scripts"]
+
+# The wheel also carries the skill tree, so `hubkit skills --install DIR` can lay it down.
+[tool.hatch.build.targets.wheel.force-include]
+"SKILL.md" = "hubcore/data/hub/SKILL.md"
+"LICENSE" = "hubcore/data/hub/LICENSE"
+"config.example.toml" = "hubcore/data/hub/config.example.toml"
+"intents.example.toml" = "hubcore/data/hub/intents.example.toml"
+"references" = "hubcore/data/hub/references"
+"docs" = "hubcore/data/hub/docs"
+"scripts/hubkit" = "hubcore/data/hub/scripts/hubkit"
+"scripts/learn.py" = "hubcore/data/hub/scripts/learn.py"
+"scripts/hubcore" = "hubcore/data/hub/scripts/hubcore"
+"skills/hub-mep" = "hubcore/data/hub-mep"
+"skills/hubkit-setup" = "hubcore/data/hubkit-setup"
 
 [tool.ruff]
 line-length = 140

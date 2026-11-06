@@ -825,15 +825,15 @@ def test_append_row_redacts_even_when_the_caller_did_not(tmp_path):
 
 
 def test_order_open_waits_for_a_held_lock_instead_of_skipping_it(env):
-    import fcntl
+    from hubcore import compat
     env.run("order", "ls")  # makes the state dir
     fd = os.open(env.state / "lock", os.O_WRONLY | os.O_CREAT, 0o600)
-    fcntl.flock(fd, fcntl.LOCK_EX)
+    assert compat.lock_exclusive(fd, wait=True)
     p = subprocess.Popen([sys.executable, str(SCRIPTS / "hubkit"), "order", "open", "--kind", "hotfix",
                           "--quote", "hotfix now please"], env=env.env(), stdout=subprocess.DEVNULL)
     time.sleep(1.0)
     assert p.poll() is None, "open ran while another process held the lock"
-    fcntl.flock(fd, fcntl.LOCK_UN)
+    compat.unlock(fd)
     os.close(fd)
     assert p.wait(timeout=20) == 0 and len(order_ids(env)) == 1
 
@@ -1004,7 +1004,7 @@ def test_background_agent_is_tracked_foreground_agent_is_not(env):
 
 def peer_line(name, ts):
     return json.dumps({"type": "user", "origin": {"kind": "peer", "from": "uds:x"}, "timestamp": ts,
-                       "message": {"content": f'Another Claude session sent a message:\n<cross-session-message from="uds:x" from-name="{name}" from-mode="bypass">\ndone'}})
+                       "message": {"content": f'Another Claude session sent a message:\n<cross-session-message from="uds:x" from-name="{name}" from-mode="bypass">\nstep 4 is under way'}})
 
 
 def iso(epoch):
@@ -1060,7 +1060,7 @@ def test_stall_limit_comes_from_config(env):
     env.bind()
     send(env, "peer-a", f"check {PR1}")
     age_routed(env, 20)
-    assert "STALLED" not in env.prompt("carry on").stdout and env.run("tick", "--no-notify").stdout == ""
+    assert "STALLED" not in env.prompt("carry on").stdout and "STALLED" not in env.run("tick", "--no-notify").stdout
     age_routed(env, 50)
     assert "STALLED" in env.prompt("carry on").stdout
 
@@ -1209,7 +1209,7 @@ def test_peer_message_still_queued_marks_heard(env):
     send(env, "peer-a", f"check {PR1}")
     age_routed(env, 40)
     tr = env.transcripts / "sess-hub.jsonl"
-    tr.write_text(queue_line('<cross-session-message from="uds:x" from-name="peer-a" from-mode="bypass">\nstep 4 done', iso(time.time() - 30)) + "\n")
+    tr.write_text(queue_line('<cross-session-message from="uds:x" from-name="peer-a" from-mode="bypass">\nstep 4 is under way', iso(time.time() - 30)) + "\n")
     out = env.hook("prompt", {"session_id": "sess-hub", "prompt": "carry on", "transcript_path": str(tr)}).stdout
     assert routed_items(env)[0]["last_heard"] and "STALLED" not in out
 
@@ -1441,13 +1441,13 @@ def test_a_chased_item_neither_alerts_nor_wakes_the_watch_again(env):
     env.bind()
     send(env, "peer-a", f"check {PR1}")
     age_routed(env, 20)
-    assert "ALERT" in env.run("tick", "--no-notify").stdout
+    assert "ALERT W1" in env.run("tick", "--no-notify").stdout  # the stall alert itself, not a watcher one
     send(env, "peer-a", "Status on #101?")  # chased at this step
     age_routed(env, 9)  # 29 min of silence: still the chased step
     p = env.state / "alerts.jsonl"
     rows = [json.loads(ln) for ln in p.read_text().splitlines()]
     p.write_text("".join(json.dumps({**r, "ts": r["ts"] - 700}) + "\n" for r in rows))  # the 10-minute back-off has passed
-    assert env.run("tick", "--no-notify").stdout == ""
+    assert "ALERT W1" not in env.run("tick", "--no-notify").stdout  # the routed stall alert is gone once chased
     r = env.run("watch", "--interval", "1", "--max-cycles", "2", timeout=30)
     assert r.returncode == 3 and "ALERT" not in r.stdout
 
@@ -1829,7 +1829,7 @@ def test_queued_phrases_are_detected_narrowly():
 
 def reply_from(env, name, minutes_ago=0):
     tr = env.transcripts / "sess-hub.jsonl"
-    tr.write_text(queue_line(f'<cross-session-message from="uds:x" from-name="{name}" from-mode="bypass">\nstate: on #101, review half done', iso(time.time() - minutes_ago * 60 + 5)) + "\n")
+    tr.write_text(queue_line(f'<cross-session-message from="uds:x" from-name="{name}" from-mode="bypass">\nstate: on #101, review half read, comments next', iso(time.time() - minutes_ago * 60 + 5)) + "\n")
     env.hook("prompt", {"session_id": "sess-hub", "prompt": "carry on", "transcript_path": str(tr)})
 
 
@@ -1914,6 +1914,9 @@ def test_check_clean_names_the_file_but_ignores_dot_git(env, tmp_path):
     skill = _skill_copy(env, tmp_path)
     (skill / ".git").mkdir()
     (skill / ".git" / "config").write_text("zebrafruit remote\n")
+    for cache in (".ruff_cache", ".mypy_cache"):
+        (skill / cache).mkdir()
+        (skill / cache / "entry").write_text("zebrafruit cached\n")  # tool caches are not shipped files
     env.cfg.write_text(env.cfg.read_text() + '[private]\nterms=["zebrafruit"]\n')
     def run():
         return subprocess.run([sys.executable, str(skill / "scripts" / "hubkit"), "doctor", "--check-clean"],
@@ -2107,7 +2110,7 @@ def fake_crontab(env, text):
     ct = bin_ / "crontab"
     ct.write_text(f"#!/bin/sh\ncat {env.root / 'crontab.txt'}\n")
     ct.chmod(0o755)
-    return {"PATH": f"{bin_}:{os.environ['PATH']}"}
+    return {"PATH": f"{bin_}{os.pathsep}{os.environ['PATH']}"}
 
 
 def test_doctor_flags_a_stale_seen_cron_only_when_cron_is_configured(env):

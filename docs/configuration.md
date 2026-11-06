@@ -60,6 +60,29 @@ Other environment variables: `HUBKIT_SESSIONS` (directory of Claude Code session
 | `transcript_scan_hours` | `24` | How far back to scan transcripts for hubkit hook failures. |
 | `cron_stale_min` | `15` | `doctor` flags `seen/cron` as stale when the crontab runs hubkit and the file is older than this. |
 
+### `[slow]`
+
+Estimates and the slowness check (hub-internal, see architecture).
+
+| Key | Default | Meaning |
+|---|---|---|
+| `min_samples` | `3` | Archived samples needed before the usual time replaces the stall limit. |
+| `order_default_min` | `30` | Default order estimate while there is no history. |
+| `floor_min` | `2` | A job is never SLOW under this many minutes. |
+| `tool_min` | `2` | A tool running this long is named in the why. |
+| `scan_kb` | `2048` | Tail of a transcript read for the why (tool names and queue operations only). |
+
+### `[watcher]`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `stuck_min` | `30` | Hub session `busy` this long with live jobs raises `hub:stuck`. |
+| `unhandled_min` | `10` | An alert this old with no hub heartbeat since raises `hub:unhandled`. |
+| `waiting_min` | `3` | A peer waiting on a prompt this long raises `peer:<name>:waiting`. |
+| `active_s` | `120` | A busy holder whose transcript grew this recently is working, not stalled. |
+| `watch_grace_min` | `5` | Live work with no running `hubkit watch` this long raises `watch:dead`. |
+| `notify_user` | `true` | Use the platform default desktop notification for hub and peer alerts when `tools.notify_cmd` is empty. |
+
 ### `[stop_guard]`
 | Key | Default | Meaning |
 |---|---|---|
@@ -83,6 +106,7 @@ Other environment variables: `HUBKIT_SESSIONS` (directory of Claude Code session
 | `queued_wait_min` | `60` | Work queued "after X" gets no review clock until this long after the ask (or until a review shows). |
 | `reply_window_min` | `60` | A hub reply to a peer who wrote this recently is not an ask. |
 | `repo` | `""` | `owner/name`; a bare `#N` resolves against it so `gh` can read the PR. |
+| `repo_aliases` | `{}` | Table of alias to `owner/name`. `<alias> 123`, `<alias>#123` and `owner/name#123` name the PR in that repo instead of the default `repo`. |
 | `owner_logins` | `{}` | Map of owner name to GitHub login, for peers who author PRs. |
 | `reviewer_logins` | `[]` | Logins whose review counts. Empty means any non-author review. |
 | `skip_briefs` | `["mep watch", "inbox watch"]` | Briefs containing one of these are standing watchers, never routed work. |

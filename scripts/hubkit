@@ -21,7 +21,7 @@ except BaseException as exc:  # noqa: BLE001 - the hook contract is exit 0
                 os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "hubkit"
             )
             os.makedirs(base, exist_ok=True)
-            with open(os.path.join(base, "import-errors.log"), "a") as fh:
+            with open(os.path.join(base, "import-errors.log"), "a", encoding="utf-8") as fh:
                 msg = str(exc)
                 try:
                     from hubcore.redact import redact

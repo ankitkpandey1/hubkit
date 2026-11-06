@@ -50,7 +50,24 @@ terms = []
 #   overlay.md     - free text rules that are yours: people, channels, accounts, repos, boxes.
 # Hooks (add to ~/.claude/settings.json; see the README "Hook setup"). Every key: docs/configuration.md.
 
+[slow]
+# Estimates and the slowness check (hub-internal). See docs/architecture.md.
+min_samples = 3        # archived samples needed before the usual time replaces the stall limit
+order_default_min = 30 # default order estimate while there is no history
+floor_min = 2          # never SLOW under this many minutes
+tool_min = 2           # a tool running this long is named in the why
+scan_kb = 2048         # tail of a transcript read for the why
+
+[watcher]
+stuck_min = 30        # hub busy this long with live jobs = stuck
+unhandled_min = 10    # an alert this old and no hub heartbeat since = unhandled
+waiting_min = 3       # a peer waiting on a prompt this long = alert
+active_s = 120        # a busy holder whose transcript grew this recently is working
+watch_grace_min = 5   # live work with no watch running this long = alert
+notify_user = true    # platform default desktop notification for hub/peer alerts when notify_cmd is empty
+
 [routed]
+# repo_aliases = { fe = "owner/other-repo" }   # "fe 123" / "fe#123" name a PR in that repo, not the default one
 # Work the hub hands to peers/agents (SendMessage, Agent hooks). Also settable in intents.toml [routed].
 stall_min = 15            # nothing from the owner this long = STALLED
 review_words = ["review"] # items whose message/summary has one of these are reviews

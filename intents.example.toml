@@ -12,6 +12,8 @@ hold_words = ["hold off", "on hold", "put it on hold", "hold the", "hold it", "p
 urgent_words = ["now", "asap", "urgent", "immediately", "right away", "hurry", "don't wait", "dont wait", "do not wait"]
 # This many chases on one order: the hook prints a stop-loss line (stop other work, report the blocker).
 stop_loss = 3
+# A blocker on an order must have a fix running; a fix with no recorded result after this long alerts and holds the Stop gate.
+blocker_fix_min = 3
 # Phrases that contain an order word but are not orders ("the release notes look fine").
 not_order_phrases = ["release notes", "release note", "release branch", "release candidate", "release date", "release process", "release checklist"]
 # An order word in a question is never an order, urgent words or not; the prompt hook says no order was opened and how to open one by hand.
@@ -27,10 +29,15 @@ verb_max_chars = 120
 # A short prompt matching this while an order is open counts as a chase on that order.
 chase = '(?i)\b(status|eta|done\?|still (not|waiting|running|open)|hold ?up|hurry|where are we|any progress|update\?|why is (it|this|that)|how long)'
 
+[stop_gate]
+# A final message holding one of these words, while an order is open and none has a fix on record, cannot end the turn:
+# a blocker is solved, not reported. Whole words or phrases, case-insensitive.
+blocked_words = ["blocked", "is down", "are down", "failed", "failing", "no host", "cannot reach", "can't reach", "unreachable", "not available", "waiting on", "waiting for", "stuck", "needs a person", "needs his call", "needs her call"]
+
 [corrections]
 # A human prompt matching one of these regexes (or repeating the previous prompt) makes the prompt
 # hook inject a reminder to record it: learn.py add with the quote.
-patterns = ["(?i)\\bwhy (did|didn't|do|are) (you|u)\\b", "(?i)\\bi (told|asked|said)\\b", "(?i)\\balready (told|said|asked|replied)\\b", "(?i)\\bnot what i (asked|said|meant)\\b"]
+patterns = ["(?i)\\b(useless|stupid|dumb|idiot|wtf|r u (dumb|kidding|sleeping))\\b", "(?i)^\\W*(wrong|no+|nope)[!. ]*$", "(?i)\\bwhy (did|didn't|do|are) (you|u)\\b", "(?i)\\bi (told|asked|said)\\b", "(?i)\\balready (told|said|asked|replied)\\b", "(?i)\\bnot what i (asked|said|meant)\\b"]
 repeat_similarity = 0.6
 repeat_window_min = 30
 

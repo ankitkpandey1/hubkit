@@ -5,6 +5,9 @@ All notable changes to this project are recorded here. The format follows [Keep 
 ## [Unreleased]
 
 ### Added
+- Install like miseenplace: `uv tool install hubkit-cli` (wheel built and installed in a scratch venv; not published), `hubkit skills --install DIR` (hub, hub-mep, hubkit-setup), `hubkit hooks [--skills-dir DIR] [--merge-guard]` prints the settings.json hooks block, and a `hubkit-setup` skill.
+- macOS and Windows support through one platform module (`hubcore/compat.py`) and a CI matrix; only Linux has been run so far.
+- Blockers (`order block|result`), watcher fixes, peer-report closing, `asks ls`, and warn-only merge guard.
 - Apache-2.0 license, `README.md` rewrite, `docs/` (architecture, configuration, commands, troubleshooting), `CONTRIBUTING.md`, `SECURITY.md`.
 - GitHub Actions workflow running ruff, mypy and the test suite.
 - `pyproject.toml` with package metadata and ruff, mypy and pytest settings.

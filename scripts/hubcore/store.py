@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import os
 import re
@@ -14,10 +13,9 @@ from datetime import datetime
 from datetime import tzinfo as TzInfo
 from pathlib import Path
 
-from . import config
+from . import compat, config
 from .redact import redact_obj
 
-ROW_MAX = 4096
 # Harness and peer wrappers. The test is a denylist on the whole normalised text, plus: any text
 # that starts with a tag is not a typed prompt, and a payload origin other than "human" is rejected.
 HARNESS_PREFIXES = ("caveat", "this session is being continued", "/compact", "[artifact", "[system", "[cross-session")
@@ -140,12 +138,10 @@ def locked(path: Path, blocking: bool = True, retries: int = 3) -> Iterator[bool
     got = False
     try:
         for _ in range(retries if not blocking else 1):
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
-                got = True
+            got = compat.lock_exclusive(fd, wait=blocking)
+            if got:
                 break
-            except BlockingIOError:
-                time.sleep(0.05)
+            time.sleep(0.05)
         yield got
     finally:
         os.close(fd)

@@ -10,7 +10,9 @@ import os
 import tomllib
 from pathlib import Path
 
-SKILL_DIR = Path(__file__).resolve().parent.parent.parent
+_HERE = Path(__file__).resolve().parent
+# A clone or an installed skill directory sits two levels above hubcore; the wheel carries the same tree as package data.
+SKILL_DIR = _HERE / "data" / "hub" if (_HERE / "data" / "hub").is_dir() else _HERE.parent.parent
 ENV_PREFIX = "HUBKIT"
 
 DEFAULTS: dict = {
@@ -32,8 +34,11 @@ DEFAULTS: dict = {
             "~/.claude/projects/*/*/subagents/agent-{id}.jsonl",
             "/tmp/claude-*/*/*/tasks/{id}.output",
         ], "reviewer_logins": [], "review_words": ["review"], "review_stall_min": 5, "review_overdue_min": 10},
+    "slow": {"min_samples": 3, "order_default_min": 30, "floor_min": 2, "tool_min": 2, "scan_kb": 2048},
+    "watcher": {"stale_agent_min": 30, "stuck_min": 30, "unhandled_min": 10, "waiting_min": 3, "active_s": 120, "watch_grace_min": 5, "notify_user": True},
     "mep": {"enabled": True, "timeout_s": 30},
     "watchdog": {"transcript_scan_hours": 24, "cron_stale_min": 15},
+    "think": {"decisions": ""},  # path of the active slug's decisions.md; its last lines go in the status block
     "stop_guard": {"phrases": ["waits for your go", "say go", "want me to", "shall i"]},
     "private": {"terms": []},
 }

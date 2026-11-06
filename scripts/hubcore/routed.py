@@ -170,7 +170,7 @@ def _is_reply(cfg: dict, owner: str, text: str, asked: list[str], now: float | N
 def peers(cfg: dict) -> dict[str, float]:
     """Last time each peer wrote to the hub (from the transcript scans)."""
     try:
-        return json.loads((store.state(cfg) / "peers.json").read_text())
+        return json.loads((store.state(cfg) / "peers.json").read_text(encoding="utf-8"))
     except ValueError, OSError:
         return {}
 
@@ -203,7 +203,20 @@ def is_work(cfg: dict, owner: str, text: str, asked: list[str] | None = None) ->
         return False  # "Ack #399 hold": a bare acknowledgement that names a PR is not an ask; any request cue makes it one
     if asked if asked is not None else PR_REF.search(text):
         return True
-    return len(text) >= int(o["min_chars"]) and not ACK.match(text)
+    if len(text) >= int(o["min_chars"]):
+        return not ACK.match(text)
+    return is_short_ask(text)
+
+
+SHORT_ASK = re.compile(
+    r"(?im)(?:^\W*|[.!?]\s+)(?:please|pls|can you|could you|would you|will you|check|look|fix|send|run|merge|deploy|rebase|take|handle|tell|report|reply|confirm|verify|investigate|find|start|stop|update|write|add|open|close|make)\b|\?\s*$"
+)
+
+
+def is_short_ask(text: str) -> bool:
+    """A short message that asks the peer to do or answer something: a request verb opening a sentence, or a question.
+    Not an acknowledgement, not a status question (that is a chase), and long enough to carry a request."""
+    return len(text.strip()) >= 15 and not ACK.match(text) and not CHASE.search(text) and bool(SHORT_ASK.search(text))
 
 
 REQUEST = re.compile(
@@ -231,16 +244,66 @@ def pr_num(ref: str) -> str:
     return ref.rstrip("/").rsplit("/", 1)[-1].lstrip("#")
 
 
+def pr_key(ref: str) -> str:
+    """Repo and number of a PR ref: `owner/repo#N` for a URL, `#N` for a bare number (repo not known)."""
+    parts = ref.rstrip("/").split("/")
+    return f"{parts[3]}/{parts[4]}#{parts[6]}".lower() if ref.startswith("http") and len(parts) >= 7 else "#" + pr_num(ref)
+
+
+def same_pr(a: str, b: str) -> bool:
+    """The same PR: equal repo and number, or one side is a bare number (repo unknown) with the same number."""
+    ka, kb = pr_key(a), pr_key(b)
+    return ka == kb or (("/" not in ka or "/" not in kb) and pr_num(a) == pr_num(b))
+
+
+def overlaps(xs: list[str], ys: list[str]) -> bool:
+    """Any PR in common."""
+    return any(same_pr(x, y) for x in xs for y in ys)
+
+
+def covers(xs: list[str], ys: list[str]) -> bool:
+    """Every PR of `xs` is in `ys`."""
+    return all(any(same_pr(x, y) for y in ys) for x in xs)
+
+
+REPO_REF = re.compile(r"(?<![\w/.-])([\w.-]+/[\w.-]+)#(\d{2,6})\b")
+
+
+def _repo_refs(cfg: dict, text: str) -> tuple[list[str], str]:
+    """PRs named with their repo: `owner/repo#N`, or `<alias> N` / `<alias>#N` / `<alias> PR N` for a configured
+    `routed.repo_aliases` entry (alias -> owner/repo). Returns the URLs and the text with those spans removed, so
+    the number is not read again as a bare one in the default repo."""
+    out: list[str] = []
+
+    def take(repo: str, n: str) -> str:
+        out.append(f"https://github.com/{repo}/pull/{n}")
+        return " "
+
+    def repl(repo: str | None = None):  # noqa: ANN202 - a re.sub callback
+        def inner(m: re.Match[str]) -> str:
+            return take(repo or m[1], m[2] if repo is None else m[1])
+
+        return inner
+
+    text = REPO_REF.sub(repl(), text)
+    for alias, repo in dict(opts(cfg).get("repo_aliases", {})).items():
+        text = re.sub(rf"(?i)(?<![\w/.-]){re.escape(alias)}(?:\s*#|\s+pr\s*#?\s*|\s+)(\d{{2,6}})\b", repl(repo), text)
+    return list(dict.fromkeys(out)), text
+
+
 def refs(cfg: dict, text: str, cap: int | None = MAX_PRS) -> list[str]:
-    """PR refs in a text: full URLs, and bare #N / PR N resolved against `routed.repo` (else left as #N)."""
-    urls = list(dict.fromkeys(PR_URL.findall(text)))
-    seen = {pr_num(u) for u in urls}
+    """PR refs in a text: full URLs, repo-qualified refs, and bare #N / PR N resolved against `routed.repo`
+    (else left as #N)."""
+    qualified, text = _repo_refs(cfg, text)
+    urls = list(dict.fromkeys([*PR_URL.findall(text), *qualified]))
+    seen = {pr_key(u) for u in urls}
     repo = str(opts(cfg).get("repo", ""))
     out = list(urls)
     for n in dict.fromkeys(BARE.findall(text)):
-        if n not in seen:
-            seen.add(n)
-            out.append(f"https://github.com/{repo}/pull/{n}" if repo else f"#{n}")
+        ref = f"https://github.com/{repo}/pull/{n}" if repo else f"#{n}"
+        if pr_key(ref) not in seen:
+            seen.add(pr_key(ref))
+            out.append(ref)
     return out[:cap]
 
 
@@ -272,9 +335,9 @@ def pr_info(cfg: dict, url: str, timeout: float) -> dict | None:
         return None
     try:
         r = subprocess.run(
-            [exe, "pr", "view", url, "--json", "headRefOid,reviews,author"],
+            [exe, "pr", "view", url, "--json", "headRefOid,reviews,author,commits"],
             capture_output=True,
-            text=True,
+            encoding="utf-8", errors="replace",
             timeout=timeout,
             check=False,
         )
@@ -295,9 +358,18 @@ def pr_info(cfg: dict, url: str, timeout: float) -> dict | None:
             "reviews": revs,
             "author": str((data.get("author") or {}).get("login", "")),
             "review_at": max((x["at"] for x in revs), default=None),
+            "head_author": _last_author(data.get("commits")),
         }
     except OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError:
         return None
+
+
+def _last_author(commits: object) -> str:
+    """Login of the author of the PR's newest commit, else an empty string (unknown)."""
+    try:
+        return str(commits[-1]["authors"][0]["login"]) if commits else ""  # type: ignore[index]
+    except KeyError, IndexError, TypeError:
+        return ""
 
 
 def counts_as_review(cfg: dict, rev: dict, info: dict) -> bool:
@@ -342,23 +414,21 @@ def _event(item: dict, kind: str, text: str, now: float) -> None:
 
 def _merge_prs(old: list[str], new: list[str]) -> list[str]:
     """One ref per PR number; a full URL replaces a bare #N."""
-    by_num: dict[str, str] = {}
+    merged: list[str] = []
     for ref in [*old, *new]:
-        n = pr_num(ref)
-        if n not in by_num or ref.startswith("http"):
-            by_num[n] = ref
-    return list(by_num.values())[:MAX_PRS]
-
-
-def _nums(prs: list[str]) -> set[str]:
-    return {pr_num(p) for p in prs}
+        hit = next((k for k, m in enumerate(merged) if same_pr(m, ref)), None)
+        if hit is None:
+            merged.append(ref)
+        elif ref.startswith("http"):
+            merged[hit] = ref
+    return merged[:MAX_PRS]
 
 
 def _same_job(i: dict, owner: str, prs: list[str], summary: str) -> bool:
     if i.get("kind") != "routed" or i["owner"] != owner:
         return False
     if prs:
-        return bool(_nums([*i["prs"], *i.get("queue", [])]) & _nums(prs))
+        return overlaps([*i["prs"], *i.get("queue", [])], prs)
     return not i["prs"]  # no PR named: a follow-up to the same owner is the same outcome
 
 
@@ -367,6 +437,7 @@ def _chase(cfg: dict, item: dict, text: str, heads: dict[str, str], now: float) 
     or an old-head verdict (the hub acted), so those flags clear and the new head becomes the baseline."""
     _event(item, "chase", text, now)
     item["chases"] = int(item.get("chases", 0)) + 1
+    item["addressed"] = [*item.get("addressed", []), now]
     item["chased_level"] = eff_level(cfg, item, now)
     v = item.get("verdict_old_head")
     if v:
@@ -404,6 +475,7 @@ def record(
     queue: list[str] | None = None,
     waiting: bool = False,
     pushes: bool = False,
+    estimate: int | None = None,
 ) -> dict:
     """Open the outcome, or refresh it (same owner and PR number). A chase only adds an event."""
     now = now or time.time()
@@ -415,7 +487,7 @@ def record(
         follow_up = (
             hit is not None
             and not brief
-            and _nums(named) <= _nums([*hit["prs"], *hit.get("queue", [])])
+            and covers(named, [*hit["prs"], *hit.get("queue", [])])
         )
         if hit is not None and (chase or follow_up):
             _chase(cfg, hit, summary, heads, now)
@@ -423,6 +495,7 @@ def record(
                 hit["prs"] = _merge_prs(hit["prs"], prs)  # a full URL replaces a bare #N
             work_save(sd, all_)
             return hit
+        is_new = hit is None
         if hit is None:
             hit = {
                 "id": next_work_id(sd, all_),
@@ -437,6 +510,11 @@ def record(
                 "chases": 0,
             }
             all_.append(hit)
+        if is_new:
+            hit["behind"] = [i["id"] for i in all_ if i is not hit and i.get("kind") == "routed" and i["owner"] == owner]
+            for other in all_:  # a brief on the same PRs to another owner is a re-brief: it addresses the old item
+                if other is not hit and other.get("kind") == "routed" and other["owner"] != owner and overlaps(named, [*other["prs"], *other.get("queue", [])]):
+                    other["addressed"] = [*other.get("addressed", []), now]
         _event(hit, "ask", summary, now)
         hit.update(
             title=summary,
@@ -453,12 +531,29 @@ def record(
             verdict_old_head=None,
             chased_level=None,
         )
+        _set_estimate(cfg, hit, estimate, now)
         hit["heads"] = {
             **hit["heads"],
             **heads,
         }  # re-asking resets the baseline: the hub has acted on the new head
         work_save(sd, all_)
     return hit
+
+
+def from_estimate(text: str) -> int | None:
+    """Minutes of the brief's `Estimate: <n>m` line, else None."""
+    from . import slow
+
+    return slow.parse_estimate(text)
+
+
+def _set_estimate(cfg: dict, item: dict, given: int | None, now: float) -> None:
+    """A new ask carries an estimate: the brief's `Estimate:` line, else the usual time for its step (defaulted)."""
+    from . import slow
+
+    mins, basis = (float(given), "brief") if given else slow.item_default(cfg, item)
+    item["estimates"] = [*item.get("estimates", []), {"t": now, "min": mins, "source": "brief" if given else "default", "basis": basis}]
+    item.update(estimate_min=mins, estimate_defaulted=not given, estimate_basis=basis, addressed=[])
 
 
 def from_tool(
@@ -523,6 +618,7 @@ def from_tool(
         queue,
         queued_behind(text, summary),
         pushes_to_pr(cfg, text, summary) and not chase,
+        from_estimate(text),
     )
 
 
@@ -578,9 +674,13 @@ def needs_action(cfg: dict, item: dict, now: float) -> bool:
     """Something the hub must do now: a moved head, a verdict on an old head, or a silence not yet chased at this step."""
     if item.get("head_moved") or item.get("verdict_old_head"):
         return True
+    from . import watcher
+
     lvl = eff_level(cfg, item, now)
-    return lvl is not None and (
-        item.get("chased_level") is None or item["chased_level"] < lvl
+    return (
+        lvl is not None
+        and (item.get("chased_level") is None or item["chased_level"] < lvl)
+        and watcher.excused(cfg, item, now) is None
     )
 
 
@@ -661,6 +761,13 @@ def prompt_lines(cfg: dict, now: float) -> list[str]:
     return out
 
 
+def slow_why(cfg: dict, item: dict, now: float) -> str:
+    """What the holder is doing, from real signals (see slow.why)."""
+    from . import slow
+
+    return slow.why(cfg, item["owner"], item, now, False)[0]
+
+
 def alerts(cfg: dict, now: float) -> list[dict]:
     """Tick alerts, one per item and ladder step; back-off is applied by the tick."""
     out = []
@@ -681,7 +788,7 @@ def alerts(cfg: dict, now: float) -> list[dict]:
                 {
                     "key": f"{i['id']}:routed_stalled:L{lvl}",
                     "msg": (
-                        f"{_label(i)} to {i['owner']}: {_why(cfg, i, now)}. NEXT: {next_action(cfg, i, now)}"
+                        f"{_label(i)} to {i['owner']}: {_why(cfg, i, now)}; holder: {slow_why(cfg, i, now)}. NEXT: {next_action(cfg, i, now)}"
                     ),
                 }
             )
@@ -736,6 +843,11 @@ def heard(cfg: dict, events: list[tuple[float, str, str]]) -> int:
                     if not i.get("review"):  # a review item stays: the review check on the PR decides
                         i["answered"] = True
                         i["done_note"] = "agent completed (task notification)"
+                from_owner = bool(name) and name.lower() == i["owner"].lower()
+                if from_owner and not i.get("review") and ts > (i.get("routed_at") or i["added"]) and is_report(text) \
+                        and _report_is_about(all_, i, text):
+                    i["answered"] = True  # the owner reported its result to the hub; a review item waits for the PR's own review
+                    i["done_note"] = "owner reported its result (message to the hub)"
                 if (name.lower() == i["owner"].lower() or by_text) and ts > (
                     i.get("last_heard") or 0
                 ):
@@ -743,15 +855,32 @@ def heard(cfg: dict, events: list[tuple[float, str, str]]) -> int:
                     n += 1
                     if i.get("state_ask") and ts > (i.get("routed_at") or 0):
                         i["answered"] = True  # a state question is answered by one reply
-        for i in [x for x in all_ if x.get("answered")]:
+        closing = [x for x in all_ if x.get("answered")]
+        for i in closing:
             _archive(cfg, i, i.get("done_note") or "state question answered", time.time())
             all_.remove(i)
-        if n:
+        if n or closing:
             work_save(sd, all_)
     return n
 
 
 COMPLETED = re.compile(r"<status>\s*completed\s*</status>")
+PEER_BODY = re.compile(r"<cross-session-message[^>]*>(.*?)(?:</cross-session-message>|\Z)", re.S)
+PEER_RESULT = re.compile(r"(?i)\b(done|finished|complete[d]?|merged|pushed|passed|passing|green|fixed|shipped|result|ready for)\b")
+PEER_NOT_RESULT = re.compile(r"(?i)\b(blocked|failed|failing|cannot|can't|couldn't|unable|error|stuck|waiting)\b")
+
+
+def _report_is_about(all_: list[dict], item: dict, text: str) -> bool:
+    """A report closes the owner's only item; when the owner holds several, it must name this item's PR or id."""
+    mine = [x for x in all_ if x.get("kind") == "routed" and x["owner"] == item["owner"]]
+    return len(mine) == 1 or any(pr_num(u) in re.findall(r"\d+", text) for u in item["prs"]) or item["id"] in text
+
+
+def is_report(text: str) -> bool:
+    """A peer's message reports a result: a result word, no blocker word, and it does not end on a question."""
+    m = PEER_BODY.search(text)
+    body = (m[1] if m else text).strip()
+    return bool(body) and not body.endswith("?") and bool(PEER_RESULT.search(body)) and not PEER_NOT_RESULT.search(body)
 
 
 def peer_name(text: str) -> str:
@@ -771,14 +900,14 @@ def _entry_event(o: dict) -> tuple[str, str] | None:
         text = o.get("content") if o.get("operation") == "enqueue" else None
         text = text.lstrip() if isinstance(text, str) else ""
         if text.startswith("<cross-session-message"):
-            return peer_name(text), ""
+            return peer_name(text), text
         return ("", text) if text.startswith("<task-notification") else None
     kind = (o.get("origin") or {}).get("kind")
     if o.get("type") != "user" or kind not in ("peer", "task-notification"):
         return None
     c = o.get("message", {}).get("content")
     text = c if isinstance(c, str) else json.dumps(c)
-    return (peer_name(text), "") if kind == "peer" else ("", text)
+    return (peer_name(text), text) if kind == "peer" else ("", text)
 
 
 def scan_transcript(cfg: dict, path: str | Path | None) -> int:
@@ -792,7 +921,7 @@ def scan_transcript(cfg: dict, path: str | Path | None) -> int:
     except OSError:
         return 0
     try:
-        seen = json.loads(sp.read_text())
+        seen = json.loads(sp.read_text(encoding="utf-8"))
     except ValueError, OSError:
         seen = {}
     prev = seen.get(str(p))
@@ -991,6 +1120,9 @@ def refresh_prs(cfg: dict, now: float) -> list[dict]:
                     i["heads"][u] = info["head"]
                 elif i.get("pushes") and not i.get("review"):
                     i["heads"][u] = info["head"]  # the owner was asked to push to this PR: its pushes are the work
+                elif owner_is_author(cfg, i["owner"], info.get("head_author", "")):
+                    i["heads"][u] = info["head"]  # the head moved by the owner's own commit: progress, not a stray push
+                    i["last_heard"] = max(i.get("last_heard") or 0, now)
                 elif not same_head(old, info["head"]):
                     i["head_moved"] = {
                         "url": u,

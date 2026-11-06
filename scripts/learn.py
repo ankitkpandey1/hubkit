@@ -68,7 +68,7 @@ def main() -> int:
             ov = [f for f in (learnings.overlay_path(cfg), config.SKILL_DIR / "SKILL.md") if f.exists()]
             print(learnings.mark_addressed(path, args.cls, args.date, args.how, learnings.rules_hash(cfg),
                                            max(f.stat().st_mtime for f in ov),
-                                           "\n".join(f.read_text(errors="replace") for f in ov)))
+                                           "\n".join(f.read_text(encoding="utf-8", errors="replace") for f in ov)))
         elif args.cmd == "promote":
             print(learnings.promote(path, learnings.overlay_path(cfg), args.cls, args.gate, args.rule))
         elif args.cmd == "review":

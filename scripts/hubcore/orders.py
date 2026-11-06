@@ -51,6 +51,17 @@ def parse_deadline(text: str, now: float, cfg: dict) -> float | None:
     return None
 
 
+def _fold_block(o: dict, r: dict) -> None:
+    """A block row opens a blocker, or (same `on`) adds a fix to the open one. A new fix restarts the fix clock."""
+    cur = o["blocker"]
+    if cur is None or cur["on"] != r["on"]:
+        cur = o["blocker"] = {"on": r["on"], "since": r["ts"], "fix": "", "fix_at": None, "holder": ""}
+    if r.get("holder"):
+        cur["holder"] = r["holder"]
+    if r.get("fix"):
+        cur["fix"], cur["fix_at"] = r["fix"], r["ts"]
+
+
 def fold(rows: list[dict]) -> dict[str, dict]:
     """Fold order rows (file order) into one dict per order id. First close wins."""
     out: dict[str, dict] = {}
@@ -67,6 +78,8 @@ def fold(rows: list[dict]) -> dict[str, dict]:
                     "quote": r.get("quote", ""), "refs": r.get("refs", []),
                     "opened": r["ts"], "deadline": r.get("deadline"), "moves": [],
                     "chases": 0, "chase_quotes": [], "evidence": {}, "held_quote": "",
+                    "estimates": [], "estimate_min": None,
+                    "blocker": None, "results": [], "stoploss": None,
                 },
             )
             continue
@@ -77,6 +90,16 @@ def fold(rows: list[dict]) -> dict[str, dict]:
             o["state"] = "open"
         elif op == "move":
             o["moves"].append((r["ts"], r.get("note", "")))
+        elif op == "block":
+            _fold_block(o, r)
+        elif op == "result":
+            o["results"].append((r["ts"], r.get("note", "")))
+            o["blocker"] = None  # only a recorded result clears a blocker
+        elif op == "stoploss":
+            o["stoploss"] = r["ts"]
+        elif op == "estimate":
+            o["estimates"].append({"t": r["ts"], "min": r["minutes"], "source": r.get("source", "hub"), "why": r.get("why", "")})
+            o["estimate_min"] = r["minutes"]
         elif op == "ref":
             o["refs"] = list(o["refs"]) + list(r.get("refs", []))
         elif op == "chase":
@@ -141,9 +164,72 @@ class Orders:
         """Turn an unconfirmed order into an open one."""
         self._append(oid, "confirm")
 
-    def move(self, oid: str, note: str) -> None:
-        """Record real movement on an order."""
+    def move(self, oid: str, note: str, estimate: int | None = None) -> str:
+        """Record real movement on an order. The first action also records its estimate (the usual time unless
+        given); returns a line saying so, or an empty string."""
+        first = self.get(oid)["estimate_min"] is None
         self._append(oid, "move", note=note)
+        if estimate:
+            self.estimate(oid, estimate, "brief")
+        elif first:
+            from . import slow
+
+            mins, basis = slow.order_default(self.cfg, self, self.get(oid))
+            self.estimate(oid, mins, "default")
+            return f"{oid} estimate defaulted to {mins:g}m ({basis}); set it: hubkit work estimate {oid} --minutes N --why \"..\""
+        return ""
+
+    def block(self, oid: str, on: str, fix: str = "", holder: str = "") -> str:
+        """Record what blocks an order and the fix that is running for it. A blocker without a fix, or whose fix has
+        run past `blocker_fix_min` with no result, alerts and holds the Stop gate."""
+        if len(on.strip()) < 3:
+            raise ValueError("block needs --on <what is blocked>")
+        self.get(oid)
+        self._append(oid, "block", on=store.safe(on, 200), fix=store.safe(fix, 200), holder=store.safe(holder, 80))
+        return self.blocker_line(self.get(oid)) or ""
+
+    def result(self, oid: str, note: str) -> None:
+        """Record the result of an action on an order: movement, clears its blocker and any stop-loss."""
+        if len(note.strip()) < 3:
+            raise ValueError("result needs --note <what was done and what came of it>")
+        self.get(oid)
+        self._append(oid, "result", note=store.safe(note, 300))
+
+    def stoploss(self, oid: str) -> None:
+        """Record that a STOP-LOSS line was printed for this order."""
+        self._append(oid, "stoploss")
+
+    def fix_limit_min(self) -> float:
+        return float(self.intents.get("intake", {}).get("blocker_fix_min", 3))
+
+    def blocker_problem(self, o: dict, now: float) -> str | None:
+        """Why the open blocker of an order is not being solved, or None when a fresh fix is running."""
+        b = o.get("blocker")
+        if not b or o["state"] != "open":
+            return None
+        if not b["fix"]:
+            return f"{o['id']} is blocked on {b['on']} with no fix running"
+        age = (now - b["fix_at"]) / 60
+        if age > self.fix_limit_min():
+            return f"{o['id']} is blocked on {b['on']}; its fix has run {int(age)} min with no result"
+        return None
+
+    def blocker_line(self, o: dict, now: float | None = None) -> str | None:
+        """`BLOCKED on X for 4m; fix: Y (2m, holder H)` for the status line, or None."""
+        b = o.get("blocker")
+        if not b:
+            return None
+        now = now or time.time()
+        fix = f"fix: {b['fix']} ({int((now - b['fix_at']) / 60)}m{', ' + b['holder'] if b['holder'] else ''})" if b["fix"] else "NO FIX RUNNING"
+        return f"BLOCKED on {b['on']} for {int((now - b['since']) / 60)}m; {fix}"
+
+    def stoploss_pending(self, o: dict) -> bool:
+        """A STOP-LOSS line was printed and no result has been recorded since."""
+        return bool(o.get("stoploss")) and not any(t > o["stoploss"] for t, _ in o["results"])
+
+    def estimate(self, oid: str, minutes: float, source: str, why: str = "") -> None:
+        """Record an estimate beside any earlier one; never replaces it."""
+        self._append(oid, "estimate", minutes=minutes, source=source, why=store.safe(why, 200))
 
     def add_ref(self, oid: str, refs: list[str]) -> None:
         """Attach PR or ticket references to an order."""
@@ -197,7 +283,7 @@ class Orders:
         row = {
             "type": "order", "id": o["id"], "kind": o["kind"], "outcome": outcome,
             "quote": o["quote"], "opened": o["opened"], "chases": o["chases"],
-            "moves": len(o["moves"]), "ts": now, **extra,
+            "moves": len(o["moves"]), "estimates": o.get("estimates", []), "ts": now, **extra,
         }
         day = store.day_of(self.cfg, now)
         store.append_row(self.sd / "archive" / f"archive_{day}.jsonl", row)
@@ -259,7 +345,10 @@ class Orders:
 
     def last_movement(self, o: dict) -> float:
         """Epoch of the latest movement: a `move`, the open time, or a touched movement file."""
-        times = [o["opened"], *[t for t, _ in o["moves"]]]
+        times = [o["opened"], *[t for t, _ in o["results"]]]
+        if o.get("blocker"):  # notes and touched files are not progress on a blocked order; only a result is
+            return max(times + [t for t, _ in o["moves"] if t <= o["blocker"]["since"]])
+        times += [t for t, _ in o["moves"]]
         spec = self.intents["kinds"].get(o["kind"], {})
         for pat in spec.get("movement_files", []):
             for f in glob.glob(os.path.expanduser(pat)):
@@ -276,9 +365,10 @@ class Orders:
         idle = int((now - self.last_movement(o)) / 60)
         ddl = f" deadline {store.clock(self.cfg, o['deadline'])}" if o.get("deadline") else ""
         need = ",".join(spec.get("done_when", [])) or "-"
+        blocked = f" | {self.blocker_line(o, now)}" if o.get("blocker") else ""
         return (
             f"{o['id']} {o['kind']} [{o['state']}] open {age}m, idle {idle}m, "
-            f"chases {o['chases']}{ddl}; done needs: {need}"
+            f"chases {o['chases']}{ddl}; done needs: {need}{blocked}"
         )
 
     def metrics(self, day: str) -> dict:
@@ -370,9 +460,11 @@ def hook_intake(orders: Orders, text: str, now: float | None = None) -> list[str
                 n = o["chases"] + 1
                 lines.append(f"hubkit: chase recorded on {o['id']} (#{n})")
                 if n >= stop:
+                    orders.stoploss(o["id"])
                     lines.append(
                         f"hubkit STOP-LOSS: {o['id']} chased {n} times. Stop other work; reply with the "
-                        "order status line and the exact blocking step, then act on it."
+                        "order status line and the exact blocking step, then act on it. The Stop gate stays shut until "
+                        f"you record a result: hubkit order result {o['id']} --note \"<what you did, what came of it>\""
                     )
     for o in orders.live():
         lines.append("hubkit: " + orders.status_line(o, now))
