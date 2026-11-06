@@ -4,6 +4,14 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-06
+
+### Added
+- `hubkit find WORD [--since]` and, in `digest` and `eod`, the PRs the user's account opened plus what each peer session was asked (`hubcore/ledger.py`; read only on peers, prompts redacted, `gh` failures shown).
+
+### Changed
+- The unpushed-work Stop reason only counts files changed, and commits made, since the turn began; older dirt in the checkout no longer holds a report.
+
 ## [0.2.0] - 2026-11-06
 
 ### Added

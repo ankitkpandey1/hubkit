@@ -133,3 +133,28 @@ def test_an_approval_relayed_while_ci_is_red_at_the_head_is_held(env):
     data["statusCheckRollup"] = [{"conclusion": "SUCCESS"}]
     (env.root / "gh.json").write_text(json.dumps(data))
     assert stop(env, last_assistant_message="#101 is approved.") is None
+
+
+def test_dirt_older_than_the_turn_does_not_hold_a_report_but_a_file_touched_in_the_turn_does(env, tmp_path):
+    import os
+    import subprocess
+    import time
+
+    env_git = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t", "PATH": "/usr/bin:/bin:/usr/local/bin"}
+    work = tmp_path / "work"
+    work.mkdir()
+    for a in (["init", "-b", "main"], ):
+        subprocess.run(["git", *a], cwd=work, check=True, capture_output=True, env=env_git)
+    (work / "old.txt").write_text("one\n")
+    subprocess.run(["git", "add", "old.txt"], cwd=work, check=True, capture_output=True, env=env_git)
+    subprocess.run(["git", "commit", "-m", "one"], cwd=work, check=True, capture_output=True, env=env_git)
+    (work / "old.txt").write_text("two\n")
+    long_ago = time.time() - 7200
+    os.utime(work / "old.txt", (long_ago, long_ago))
+    env.bind()
+    msg = {"last_assistant_message": "The role change is built and ready.", "cwd": str(work)}
+    assert stop(env, transcript_path=transcript(env, ["Read"]), **msg) is None  # dirt from before the turn
+    (work / "new.txt").write_text("x\n")
+    subprocess.run(["git", "add", "new.txt"], cwd=work, check=True, capture_output=True, env=env_git)
+    held = stop(env, transcript_path=transcript(env, ["Read"]), **msg)
+    assert held and "1 changed file(s) not committed" in held["reason"]

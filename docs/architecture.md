@@ -114,11 +114,11 @@ The Stop hook blocks the end of the turn, with the exact next action, while any 
 5. A blocker is not being solved (no fix running, fix past its limit), a STOP-LOSS has no result since, or the final message calls an open order blocked/down/failed/waiting while no order has a fix on record.
 6. The final message says done while his newest prompt is newer than the last `work done` and the last `hubkit asks ls`; or it calls something gone/lost/absent, or "a person's call", with no Read/Grep/Glob/Bash call in the turn (transcript read).
 7. The final message ends on a question (or holds a `stop_guard.phrases` phrase) and no `ask` work item says anything really waits on the user. A question that is really blocked on him must use the card tool, not prose. An `ask` item asked 3 times with no answer also holds the turn: take the safest default and record it.
-8. The final message says "tests pass", "it works" or "is deployed" (`[stop_gate] verified_words`) but the turn ran no Bash command; names a PR or issue number with no link (`[stop_gate] full_links`); approves a PR while CI at its head is not green; or reports built work while the repo at the hook's `cwd` has uncommitted changes or unpushed commits.
+8. The final message says "tests pass", "it works" or "is deployed" (`[stop_gate] verified_words`) but the turn ran no Bash command; names a PR or issue number with no link (`[stop_gate] full_links`); approves a PR while CI at its head is not green; or reports built work while the repo at the hook's `cwd` has uncommitted changes or unpushed commits made since the turn began (older dirt in the checkout does not count).
 
 ## Digest and trust
 
-`hubkit digest [--since 12h]` prints what finished, which orders closed, the latest alerts and what waits on the user. `hubkit trust record --class C --outcome accept|edit|reject` appends to `trust.jsonl`; `trust ls` shows each class as `auto` (enough accepts and nothing else) or `ask` (propose first), and the session status block names the classes that earned `auto` and those he rejected.
+`hubkit digest [--since 12h]` prints what finished, which orders closed, the latest alerts, what waits on the user, the PRs his account opened and what each peer session was asked (`ledger.py`: peer transcripts are read only and prompts are redacted; a `gh` failure is shown, not hidden). `hubkit find WORD` searches the same record plus orders, work, the archive and his asks. `hubkit trust record --class C --outcome accept|edit|reject` appends to `trust.jsonl`; `trust ls` shows each class as `auto` (enough accepts and nothing else) or `ask` (propose first), and the session status block names the classes that earned `auto` and those he rejected.
 
 ## The learn loop
 

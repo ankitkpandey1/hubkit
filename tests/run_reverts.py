@@ -343,6 +343,13 @@ REVERTS = [
     ('unrun claim needs Bash', 'hubcore/lessons.py', 'if not hit or names is None or "Bash" in names:', 'if True:', 'tests/test_tool_guards.py::test_a_claim_that_tests_pass_needs_a_command_run_this_turn'),
     ('bare PR refs held', 'hubcore/lessons.py', '"http" in last:', '"http" in last or True:', 'tests/test_tool_guards.py::test_a_report_naming_a_pr_number_with_no_link_is_held'),
     ('approval on red CI held', 'hubcore/gate.py', 'if info and info.get("ci") in ("failing", "pending"):', 'if False:', 'tests/test_tool_guards.py::test_an_approval_relayed_while_ci_is_red_at_the_head_is_held'),
+    ('older dirt does not hold', 'hubcore/lessons.py', '    if since is not None:\n        dirty =', '    if False:\n        dirty =', 'tests/test_tool_guards.py::test_dirt_older_than_the_turn_does_not_hold_a_report_but_a_file_touched_in_the_turn_does'),
+    ('find searches PR files', 'hubcore/ledger.py', '" ".join(p["files"]),', '"",', 'tests/test_ledger.py::test_find_searches_pr_title_body_files_and_peer_prompts_not_only_routed_work'),
+    ('find searches peer prompts', 'hubcore/ledger.py', 'for r in peer_prompts(cfg, since):\n        check(', 'for r in []:\n        check(', 'tests/test_ledger.py::test_find_searches_pr_title_body_files_and_peer_prompts_not_only_routed_work'),
+    ('find shows gh failure', 'hubcore/ledger.py', '    if data["error"]:\n        hits.append', '    if False:\n        hits.append', 'tests/test_ledger.py::test_find_shows_a_gh_failure_instead_of_swallowing_it'),
+    ('peer prompts redacted', 'hubcore/ledger.py', '"text": redact(" ".join(text.split()))[0][:300]', '"text": " ".join(text.split())[:300]', 'tests/test_ledger.py::test_peer_prompts_are_redacted_like_state'),
+    ('eod lists PRs and peers', 'hubcore/status.py', 'glance(cfg, day) + [""] + ledger.day_lines(cfg, day)', 'glance(cfg, day)', 'tests/test_ledger.py::test_digest_and_eod_list_todays_prs_and_what_each_peer_was_asked'),
+    ('digest lists PRs and peers', 'hubcore/status.py', 'return out + ledger.day_lines(cfg, store.day_of(cfg, since))', 'return out', 'tests/test_ledger.py::test_digest_and_eod_list_todays_prs_and_what_each_peer_was_asked'),
 ]
 
 

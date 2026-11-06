@@ -11,7 +11,7 @@ import time
 import tomllib
 from pathlib import Path
 
-from . import compat, config, hooks, inbound, install, lessons, routed, status, store, trust, watcher
+from . import compat, config, hooks, inbound, install, ledger, lessons, routed, status, store, trust, watcher
 from .orders import Orders
 from .redact import count_hits_text
 
@@ -265,6 +265,9 @@ def main(argv: list[str] | None = None) -> int:
 
     st = sub.add_parser("status")
     st.add_argument("--json", action="store_true")
+    fd = sub.add_parser("find")
+    fd.add_argument("word")
+    fd.add_argument("--since", default="2d", help="how far back for asks, peer prompts and PRs, for example 12h, 2d")
     dg = sub.add_parser("digest")
     dg.add_argument("--since", default="12h", help="how far back, for example 30m, 12h, 2d")
     e = sub.add_parser("eod")
@@ -308,6 +311,8 @@ def main(argv: list[str] | None = None) -> int:
         elif a.cmd == "status":
             st_ = status.write_status(cfg)
             print(json.dumps(st_, indent=1) if a.json else status.render_block(cfg, Orders(cfg), st_))
+        elif a.cmd == "find":
+            print("\n".join(ledger.find(cfg, a.word, a.since)))
         elif a.cmd == "digest":
             print("\n".join(status.digest(cfg, a.since)))
         elif a.cmd == "eod":

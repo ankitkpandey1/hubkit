@@ -16,10 +16,11 @@
 | `hubkit order open --kind K --quote "..." [--unconfirmed]` | Open an order by hand. |
 | `hubkit order confirm ID` | Turn an unconfirmed order into an open one. |
 | `hubkit order move ID --note "..." [--estimate N]` | Record real movement. The first move also records the order's estimate (N minutes, else the usual time for its kind; printed when defaulted). |
-| `hubkit digest [--since 12h]` | What finished, which orders closed, the latest alerts and what waits on the user, for a user coming back. |
+| `hubkit digest [--since 12h]` | What finished, which orders closed, the latest alerts, what waits on the user, the PRs his account opened and what each peer session was asked, for a user coming back. |
 | `hubkit inbound ingest [--file F]` | Turns the inbox watcher's lines into `reply` work items (one per asker, no duplicates). |
 | `hubkit trust record --class C --outcome O` / `trust ls` | Per-class record of approved and corrected outcomes; a class with repeated corrections is shown as ask-first. |
 | `hubkit work verify ID` | Stamp the item as checked against reality just now. An `active` or `priority` item not verified for `watcher.verify_stale_min` raises an alert. It runs no check itself. |
+| `hubkit find WORD [--since 2d]` | Searches orders, work, the archive, his asks, peer session prompts and the PRs his account opened (title, body, changed file paths). Needs `gh` for the PR part; a `gh` failure is printed as UNKNOWN, never skipped. Read only on peer sessions; prompts are redacted. |
 | `hubkit asks ls [--since 12h]` | His recent prompts (from `recent-prompts.jsonl`), one line each, newest last. Marks the asks as re-read for the Stop gate. |
 | `hubkit order block ID --on "..." [--fix "..."] [--holder who]` | Record what blocks an order and the fix running now (a second call with the same `--on` adds the fix). No fix, or a fix older than `blocker_fix_min` with no result, alerts and holds the Stop gate. |
 | `hubkit order result ID --note "..."` | Record the result of an action: movement, clears the blocker and any STOP-LOSS. Notes from `order move` do neither. |
@@ -37,7 +38,7 @@
 | `hubkit work ls` | List live items. |
 | `hubkit tick [--if-bound] [--no-notify]` | One watchdog pass; prints `ALERT ...` lines. `--if-bound` is a no-op unless a hub is bound or an order is open (for cron). |
 | `hubkit watch [--interval S] [--max-cycles N]` | Loop `tick` (defaults 300 s, 12 cycles). Exits 0 printing `ALERT ...`, 3 after the cycles, 4 if another watch runs. |
-| `hubkit eod [--day D] [--note ".."]` | Write and print the end-of-day review. |
+| `hubkit eod [--day D] [--note ".."]` | Write and print the end-of-day review, including the day's PRs and what each peer session was asked. |
 | `hubkit doctor [--check-clean]` | Print config, state, bind, hook heartbeats, ledger health and a count of secret-shaped strings in state. Warns when your `intents.toml` lacks keys the example has, when a hubkit hook is registered twice in `settings.json` (read only), and when no scheduler entry runs `hubkit eod`. `--check-clean` also lists checkout files containing a `private.terms` word. Exit 1 on a problem. |
 | `hubkit hook EVENT` | Run one hook (`session`, `prompt`, `answer`, `routed`, `stop`, `record`, `pretool`); reads the payload from stdin. For Claude Code, not for people. |
 

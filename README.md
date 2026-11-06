@@ -33,7 +33,7 @@ In a live hub, the prompt hook opens that order itself from your sentence, and t
 - **Watchdog and wake-up.** `hubkit tick` (cron) and `hubkit watch` (a background process) raise alerts with back-off; a watch exit wakes an idle hub.
 - **Stop gate.** The Stop hook refuses to let the turn end while the hub owes something (no watch running, a stalled item, an unbacked verdict, a question to you that blocks nothing, a "tests pass" claim with no command run, a PR number with no link, an approval on red CI, built work not pushed).
 - **Tool guards.** An optional warn-only PreToolUse hook (`hubkit hooks --merge-guard`) warns about an unordered merge, a post without your typed yes, a banned command, stopping an agent and an unmarked decision card. It never denies.
-- **Status, digest, end-of-day review.** A status block at session start and on each prompt, a daily archive, `hubkit digest` for when you come back, `hubkit eod`, a per-class `hubkit trust` ledger, and `hubkit inbound ingest` to track asks from other people so none goes unanswered.
+- **Status, digest, end-of-day review.** A status block at session start and on each prompt, a daily archive, `hubkit digest` for when you come back (it also lists the PRs your account opened and what each peer session was asked), `hubkit find WORD` to search orders, work, asks, peer prompts and your PRs, `hubkit eod`, a per-class `hubkit trust` ledger, and `hubkit inbound ingest` to track asks from other people so none goes unanswered.
 
 `SKILL.md` is the behaviour contract the hub session reads. This file is the operator view.
 
@@ -99,6 +99,7 @@ hubkit order open --kind hotfix --quote "hotfix the billing bug now"   # or let 
 hubkit order ls
 hubkit work add --kind active --title "triage the flaky test"
 hubkit status                                                          # the status block
+hubkit find billing --since 2d                                         # search orders, asks, peer prompts, your PRs
 python3 ~/.claude/skills/hub/scripts/learn.py add --class ask-before-merge --gate G5 \
     --quote "I told you to wait for the review" --situation "..." --wrong "..." --right "..." --evidence "..."
 ```

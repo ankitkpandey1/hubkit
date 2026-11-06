@@ -147,7 +147,7 @@ def stop_reasons(cfg: dict, last: str, now: float | None = None, transcript: str
     ci_bad = ci_not_green(cfg, last)  # before prompt_lines: a reviewed item closes there
     reasons = routed.prompt_lines(cfg, now)
     reasons += blocker_reasons(cfg, last, now)
-    if r := lessons.unpushed_work(last, cwd):
+    if r := lessons.unpushed_work(last, cwd, transcript):
         reasons.append(r)
     reasons += [r for r in (lessons.unswept_asks(cfg, last, now), lessons.unchecked_claim(cfg, last, transcript), lessons.unrun_claim(cfg, last, transcript)) if r]
     if refs := lessons.bare_refs(cfg, last):

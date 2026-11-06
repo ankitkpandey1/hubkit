@@ -566,7 +566,9 @@ def digest(cfg: dict, span: str = "12h", now: float | None = None) -> list[str]:
     out += [f"  alert: {r.get('msg', '')}" for r in alerts[-5:]]
     out += [f"  waits on you {i['id']}: {i.get('title', '')}" for i in asks] or ["  nothing waits on you"]
     out.append(f"  still live: {len(live) - len(asks)} job(s)")
-    return out
+    from . import ledger
+
+    return out + ledger.day_lines(cfg, store.day_of(cfg, since))
 
 
 def reflection(cfg: dict, day: str) -> list[str]:
@@ -594,7 +596,9 @@ def eod(cfg: dict, day: str, note: str = "") -> Path:
     """Write and return the end-of-day review file for `day`."""
     sd = store.state(cfg)
     Orders(cfg).repair_archive()
-    body = glance(cfg, day) + [""] + reflection(cfg, day)
+    from . import ledger
+
+    body = glance(cfg, day) + [""] + ledger.day_lines(cfg, day) + [""] + reflection(cfg, day)
     if note:
         body += ["", "Self-improvement note:", "  " + learnings.clean(note)]
     out = sd / "eod" / f"eod_{day}.md"
