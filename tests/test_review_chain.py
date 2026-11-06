@@ -54,3 +54,31 @@ def test_an_owners_pushes_to_a_fix_job_are_not_a_stalled_head_but_a_reviews_move
     items = {i["owner"]: i for i in routed_items(env)}
     assert items["peer-fix"]["head_moved"] is None and items["peer-fix"]["heads"][PR1] == "bbb2222"
     assert items["peer-rev"]["head_moved"] and "ALERT" in out
+
+
+def test_a_fix_job_titled_with_review_findings_has_no_review_clock_but_a_real_review_does(env):
+    from test_hubkit import age_routed
+
+    fake_gh(env, head="aaa1111")
+    env.bind()
+    fix = f"Fix the findings from the review of {PR1}. Done-when: tests pass. Output: the PR updated, ready for re-review of {PR1}.\nEstimate: 45m"
+    send(env, "peer-fix", fix, "Fix #101 review findings")
+    assert routed_items(env)[0]["review"] is False
+    age_routed(env, 29)
+    assert "past the hard limit" not in env.prompt("carry on").stdout
+    send(env, "peer-rev", f"Full gated review of {PR2}. Done-when: a verdict. Output: the verdict", "review 102")
+    age_routed(env, 29)
+    out = env.prompt("carry on").stdout
+    assert "peer-rev" in out and "past the hard limit" in out and out.count("past the hard limit") == 1
+
+
+def test_a_reviews_own_stated_estimate_sets_its_hard_limit(env):
+    from test_hubkit import age_routed
+
+    fake_gh(env, head="aaa1111")
+    env.bind()
+    send(env, "peer-rev", f"Full gated review of {PR1}. Done-when: a verdict. Output: the verdict.\nEstimate: 60m", "review 101")
+    age_routed(env, 29)
+    assert "past the hard limit" not in env.prompt("carry on").stdout
+    age_routed(env, 40)
+    assert "past the hard limit" in env.prompt("carry on").stdout

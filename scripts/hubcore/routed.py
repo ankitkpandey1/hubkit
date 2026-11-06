@@ -85,6 +85,11 @@ LEADS_CHANGE = re.compile(
 )
 
 
+REVIEW_LEAD = re.compile(
+    r"(?i)^\W*(?:(?:please|then|and|also)\s+)*(?:full\s+|gated\s+|re-?)*review\b"
+)
+
+
 def _kinds(cfg: dict, sentence: str) -> set[str]:
     """What the owner may be asked to do in one sentence. A review word beside a PR is a review ask by default
     ("review #7", "needs a review", "can I get a review on #7"). The one exception: the sentence opens with a change
@@ -126,7 +131,16 @@ def is_review(cfg: dict, text: str, summary: str = "") -> bool:
     """A review ask: the owner is asked to review a PR, i.e. a sentence naming a PR leads with a review word (or the
     summary does). A review word elsewhere (a handover, a status) or as a noun after another action ("fix the
     findings in his review of #7") does not make it one."""
-    return "review" in _asks(cfg, strip_examples(text), summary)
+    body = strip_examples(text)
+    if "review" not in _asks(cfg, body, summary):
+        return False
+    # a job titled as a change ("Fix #7 review findings") asks for changes, not a verdict, unless a sentence leads with a review
+    leads_review = any(
+        REVIEW_LEAD.match(x)
+        for x in re.split(r"(?<=[.!?])\s+|\n", body)
+        if PR_REF.search(x)
+    )
+    return not (LEADS_CHANGE.match(summary.strip().lower()) and not leads_review)
 
 
 def pushes_to_pr(cfg: dict, text: str, summary: str = "") -> bool:
@@ -793,11 +807,12 @@ def limit(cfg: dict, item: dict) -> float:
 def overdue(cfg: dict, item: dict, now: float) -> int | None:
     """Minutes since the ask when a review passes its hard limit (hearing from the owner does not stop it)."""
     age = int((now - started_at(cfg, item)) / 60)
-    return (
-        age
-        if item.get("review") and age > float(opts(cfg)["review_overdue_min"])
-        else None
-    )
+    hard = float(opts(cfg)["review_overdue_min"])
+    if item.get("estimate_min") is not None and not item.get("estimate_defaulted"):
+        hard = max(
+            hard, float(item["estimate_min"])
+        )  # the job's own stated estimate sets its limit
+    return age if item.get("review") and age > hard else None
 
 
 def level(cfg: dict, item: dict, now: float) -> int | None:

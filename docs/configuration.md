@@ -102,7 +102,7 @@ Estimates and the slowness check (hub-internal, see architecture).
 | `stall_min` | `15` | Silence from the owner this long is STALLED; the ladder steps at multiples of it. |
 | `review_words` | `["review"]` | A message naming a PR and one of these is a review item. |
 | `review_stall_min` | `5` | Reviews: chase after this. |
-| `review_overdue_min` | `10` | Reviews: hard OVERDUE this long after routing, whatever the owner said. |
+| `review_overdue_min` | `10` | Reviews: hard OVERDUE this long after routing, whatever the owner said. A review brief with its own `Estimate: Nm` line (not a defaulted one) gets the larger of this and N. |
 | `skip_owners` | `["inbox"]` | Owners that are never tracked. |
 | `max_agents` | `4` | More distinct agents than this holding live routed work makes the routed hook warn. |
 | `min_chars` | `200` | A message without a PR is work only from this length. |

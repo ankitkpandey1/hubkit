@@ -351,6 +351,8 @@ REVERTS = [
     ('eod lists PRs and peers', 'hubcore/status.py', 'glance(cfg, day) + [""] + ledger.day_lines(cfg, day)', 'glance(cfg, day)', 'tests/test_ledger.py::test_digest_and_eod_list_todays_prs_and_what_each_peer_was_asked'),
     ('digest lists PRs and peers', 'hubcore/status.py', 'return out + ledger.day_lines(cfg, store.day_of(cfg, since))', 'return out', 'tests/test_ledger.py::test_digest_and_eod_list_todays_prs_and_what_each_peer_was_asked'),
     ('fix job push is not a stall', 'hubcore/routed.py', '        bool(PR_REF.search(text + " " + summary))\n        and bool(PUSH', '        False\n        and bool(PUSH', 'tests/test_review_chain.py::test_an_owners_pushes_to_a_fix_job_are_not_a_stalled_head_but_a_reviews_moved_head_still_is'),
+    ('fix-titled job is not a review', 'hubcore/routed.py', 'return not (LEADS_CHANGE.match(summary.strip().lower()) and not leads_review)', 'return True', 'tests/test_review_chain.py::test_a_fix_job_titled_with_review_findings_has_no_review_clock_but_a_real_review_does'),
+    ('stated estimate sets the hard limit', 'hubcore/routed.py', '        hard = max(\n            hard, float(item["estimate_min"])\n        )', '        hard = hard', 'tests/test_review_chain.py::test_a_reviews_own_stated_estimate_sets_its_hard_limit'),
 ]
 
 

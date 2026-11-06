@@ -4,6 +4,12 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-11-06
+
+### Fixed
+- A job whose title leads with a change verb ("Fix #7 review findings") is not a review item, unless one of its sentences naming the PR leads with a review.
+- The review hard limit (`routed.review_overdue_min`) is raised to the item's own stated `Estimate:` when that is longer.
+
 ## [0.2.2] - 2026-11-06
 
 ### Fixed
