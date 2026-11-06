@@ -335,7 +335,7 @@ def pr_info(cfg: dict, url: str, timeout: float) -> dict | None:
         return None
     try:
         r = subprocess.run(
-            [exe, "pr", "view", url, "--json", "headRefOid,reviews,author,commits"],
+            [exe, "pr", "view", url, "--json", "headRefOid,reviews,author,commits,state,statusCheckRollup"],
             capture_output=True,
             encoding="utf-8", errors="replace",
             timeout=timeout,
@@ -359,9 +359,25 @@ def pr_info(cfg: dict, url: str, timeout: float) -> dict | None:
             "author": str((data.get("author") or {}).get("login", "")),
             "review_at": max((x["at"] for x in revs), default=None),
             "head_author": _last_author(data.get("commits")),
+            "state": str(data.get("state") or "").upper(),
+            "ci": ci_state(data.get("statusCheckRollup")),
         }
     except OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError:
         return None
+
+
+FAILED_CHECK = {"FAILURE", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE", "ACTION_REQUIRED", "ERROR"}
+OK_CHECK = {"SUCCESS", "NEUTRAL", "SKIPPED"}
+
+
+def ci_state(rollup: object) -> str:
+    """CI at the PR's head from gh's statusCheckRollup: 'failing', 'pending', 'green', or 'none' (no checks reported)."""
+    if not isinstance(rollup, list) or not rollup:
+        return "none"
+    seen = {str(c.get("conclusion") or c.get("state") or "").upper() or "PENDING" for c in rollup if isinstance(c, dict)}
+    if seen & FAILED_CHECK:
+        return "failing"
+    return "green" if seen <= OK_CHECK else "pending"
 
 
 def _last_author(commits: object) -> str:
@@ -510,11 +526,20 @@ def record(
                 "chases": 0,
             }
             all_.append(hit)
+        moved: list[dict] = []
         if is_new:
             hit["behind"] = [i["id"] for i in all_ if i is not hit and i.get("kind") == "routed" and i["owner"] == owner]
             for other in all_:  # a brief on the same PRs to another owner is a re-brief: it addresses the old item
                 if other is not hit and other.get("kind") == "routed" and other["owner"] != owner and overlaps(named, [*other["prs"], *other.get("queue", [])]):
                     other["addressed"] = [*other.get("addressed", []), now]
+                    if brief:  # a real re-brief moves the PRs: the old owner no longer holds them
+                        other["prs"] = [u for u in other["prs"] if not overlaps([u], named)]
+                        other["queue"] = [u for u in other.get("queue", []) if not overlaps([u], named)]
+                        other["heads"] = {u: h for u, h in other["heads"].items() if u in other["prs"]}
+                        if not other["prs"]:
+                            _archive(cfg, other, f"re-briefed to {owner}", now)
+                            moved.append(other)
+        all_ = [i for i in all_ if not any(i is m for m in moved)]
         _event(hit, "ask", summary, now)
         hit.update(
             title=summary,
@@ -532,6 +557,7 @@ def record(
             chased_level=None,
         )
         _set_estimate(cfg, hit, estimate, now)
+        hit.setdefault("heads0", dict(heads))  # the head when first asked: a later head is the owner's artifact
         hit["heads"] = {
             **hit["heads"],
             **heads,
@@ -704,6 +730,10 @@ def next_action(cfg: dict, item: dict, now: float) -> str:
     if v:
         return f"SendMessage {o}: the {v['state']} review landed at {v['commit'][:7]} but the head is {v['head'][:7]}; ask for a re-review at the head"
     lvl = eff_level(cfg, item, now)
+    if item.get("reported") and not item.get("review"):
+        prs = " ".join(_pr_no(u) for u in item["prs"])
+        return (f"{o} reported it done {int((now - item['reported']) / 60)} min ago; that is a claim. Check the artifact"
+                f"{' (' + prs + ')' if prs else ''}, then: hubkit work done {item['id']} --note \"<what you checked>\"")
     if lvl is not None:
         if item.get("chased_level") is not None and item["chased_level"] >= lvl:
             nxt = base(cfg, item) + limit(cfg, item) * 60 * (lvl + 2)
@@ -846,8 +876,9 @@ def heard(cfg: dict, events: list[tuple[float, str, str]]) -> int:
                 from_owner = bool(name) and name.lower() == i["owner"].lower()
                 if from_owner and not i.get("review") and ts > (i.get("routed_at") or i["added"]) and is_report(text) \
                         and _report_is_about(all_, i, text):
-                    i["answered"] = True  # the owner reported its result to the hub; a review item waits for the PR's own review
-                    i["done_note"] = "owner reported its result (message to the hub)"
+                    i["reported"] = ts  # a claim, not evidence: the item closes on the artifact (refresh_prs) or on `work done`
+                    i["claimed"] = text[:160]
+                    n += 1  # a change to save even when no last_heard moved
                 if (name.lower() == i["owner"].lower() or by_text) and ts > (
                     i.get("last_heard") or 0
                 ):
@@ -988,7 +1019,7 @@ def _landed(
             continue
         last = max(revs, key=lambda r: r["at"])
         if same_head(last["commit"], info["head"]):
-            out[u] = ("closed", {**last, "url": u})
+            out[u] = ("closed", {**last, "url": u, "ci": info.get("ci", "none")})
         else:
             out[u] = ("old", {**last, "head": info["head"], "url": u})
     return out
@@ -1045,6 +1076,37 @@ def _advance(item: dict, det: dict, now: float) -> dict:
     }
 
 
+def artifact_exists(item: dict, url: str, info: dict) -> bool:
+    """The PR shows what the owner claims: merged or closed, or a head that moved since the first ask and CI not failing."""
+    if info.get("state") in ("MERGED", "CLOSED"):
+        return True
+    first = str((item.get("heads0") or {}).get(url) or "")
+    return bool(first) and not same_head(first, info["head"]) and info.get("ci", "none") != "failing"
+
+
+def next_step(cfg: dict, d: dict, owner: str) -> str:
+    """The concrete step after a review lands, by verdict and CI at that head."""
+    state, ci = str(d.get("state", "")).upper(), d.get("ci", "none")
+    sha = str(d.get("commit", ""))[:7]
+    if state in ("MERGED", "CLOSED"):
+        return f"the PR is {state.lower()}; tell {owner} nothing more is owed and report it"
+    if state == "REPORTED":
+        return f"{owner}'s claim is backed by the PR (merged, or the head moved with CI {ci}); report it to the user"
+    if state == "APPROVED":
+        if ci in ("failing", "pending"):
+            return f"approved at {sha} but CI is {ci}: have {owner} fix or wait for CI before any merge; do not merge on red"
+        return f"approved at {sha}, CI {ci}: if the user ordered a merge, merge with --match-head-commit {sha}; otherwise report the approval and wait for his word"
+    if state == "CHANGES_REQUESTED":
+        return f"changes requested: send {owner} the findings with the PR's comment links and ask for a push; chase it as a new item"
+    return f"read the review at {sha}, then send {owner} the next step or report the verdict"
+
+
+def _reply_owed(cfg: dict, item: dict, done: dict[str, dict]) -> str:
+    """Names the people who asked the hub for this review (inbound reply items on the same PRs)."""
+    who = sorted({x["owner"] for x in work_load(store.state(cfg)) if x.get("kind") == "reply" and overlaps(list(done), x.get("prs", []))})
+    return f" Reply owed to: {', '.join(who)}." if who else ""
+
+
 def _close_landed(cfg: dict, item: dict, done: dict[str, dict], now: float) -> dict:
     """Reviews landed at the head for some PRs of a (non-queue) item: drop them from the item and report the gaps.
     The item is archived when no PR is left."""
@@ -1052,7 +1114,7 @@ def _close_landed(cfg: dict, item: dict, done: dict[str, dict], now: float) -> d
     for u in done:
         item["heads"].pop(u, None)
     note = "; ".join(
-        f"{_pr_no(u)} {d['state']} by {d['login']} at {d['commit'][:7]} (the head)"
+        f"{_pr_no(u)} {d['state']} by {d['login']} at {d['commit'][:7]} (the head), CI {d.get('ci', 'none')}"
         for u, d in done.items()
     )
     gap = f" Still open: {' '.join(_pr_no(u) for u in item['prs'])} (no review at its head yet)." if item["prs"] else ""
@@ -1061,7 +1123,7 @@ def _close_landed(cfg: dict, item: dict, done: dict[str, dict], now: float) -> d
     first = next(iter(done.values()))
     return {
         "key": f"{item['id']}:review_landed:{pr_num(next(iter(done)))}",
-        "msg": f"{item['id']} to {item['owner']}: {note}.{gap} NEXT: read the review on GitHub and act on the {first['state']} verdict",
+        "msg": f"{item['id']} to {item['owner']}: {note}.{gap}{_reply_owed(cfg, item, done)} NEXT: {next_step(cfg, first, item['owner'])}",
     }
 
 
@@ -1143,6 +1205,16 @@ def refresh_prs(cfg: dict, now: float) -> list[dict]:
                 old if old and acked != [old["commit"], old["head"]] else None
             )
             done = {u: d for u, (v, d) in res.items() if v == "closed" and d}
+            if i.get("reported") and not i.get("review"):  # the owner said done: close only on its artifact
+                for u in i["prs"]:
+                    info = got.get(u)
+                    if info and artifact_exists(i, u, info):
+                        done[u] = {"state": "REPORTED", "login": i["owner"], "commit": info["head"], "ci": info.get("ci", "none")}
+            if i.get("review"):  # a merged or closed PR needs no review any more
+                for u in i["prs"]:
+                    info = got.get(u)
+                    if u not in done and info and info.get("state") in ("MERGED", "CLOSED"):
+                        done[u] = {"state": info["state"], "login": "GitHub", "commit": info["head"], "ci": info.get("ci", "none")}
             if done and i.get("queue"):
                 cur = i["prs"][0]
                 if cur in done:

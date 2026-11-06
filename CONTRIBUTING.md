@@ -7,7 +7,7 @@ Thanks for looking. hubkit is small on purpose: standard library only, Python 3.
 ```bash
 git clone https://github.com/ankitkpandey1/hubkit && cd hubkit
 pip install pytest ruff mypy coverage
-python3 -m pytest tests -q                       # about 2 minutes: real subprocesses
+python3 -m pytest tests -q                       # about 4 minutes: real subprocesses
 ruff check .
 mypy scripts/hubcore scripts/learn.py scripts/hubkit
 python3 tests/run_reverts.py                     # slow; run it when you touch a guarded behaviour

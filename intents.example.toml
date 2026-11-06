@@ -37,7 +37,7 @@ blocked_words = ["blocked", "is down", "are down", "failed", "failing", "no host
 [corrections]
 # A human prompt matching one of these regexes (or repeating the previous prompt) makes the prompt
 # hook inject a reminder to record it: learn.py add with the quote.
-patterns = ["(?i)\\b(useless|stupid|dumb|idiot|wtf|r u (dumb|kidding|sleeping))\\b", "(?i)^\\W*(wrong|no+|nope)[!. ]*$", "(?i)\\bwhy (did|didn't|do|are) (you|u)\\b", "(?i)\\bi (told|asked|said)\\b", "(?i)\\balready (told|said|asked|replied)\\b", "(?i)\\bnot what i (asked|said|meant)\\b"]
+patterns = ["(?i)\\b(you|u|ur|you're|youre|r u)\\s+(are\\s+|r\\s+)?(so\\s+|really\\s+)?(useless|stupid|dumb|idiot|kidding|sleeping)\\b", "(?i)^\\W*(useless|stupid|dumb|idiot|wtf)\\W*$", "(?i)\\bwtf\\b", "(?i)^\\W*(wrong|no+|nope)[!. ]*$", "(?i)\\bwhy (did|didn't|do|are) (you|u)\\b", "(?i)\\bi (told|asked|said)\\b", "(?i)\\balready (told|said|asked|replied)\\b", "(?i)\\bnot what i (asked|said|meant)\\b"]
 repeat_similarity = 0.6
 repeat_window_min = 30
 
@@ -63,6 +63,7 @@ first_action_min = 5
 stall_min = 30
 dispatch = "Merge exactly the named set."
 done_when = ["merged"]
+sha_evidence = ["merged"]   # evidence names that must hold the merge commit sha
 movement_files = []
 
 [kinds.code_red]

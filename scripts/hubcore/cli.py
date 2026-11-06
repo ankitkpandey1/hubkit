@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import sys
 import time
 import tomllib
 from pathlib import Path
 
-from . import compat, config, hooks, install, lessons, routed, status, store, watcher
+from . import compat, config, hooks, inbound, install, lessons, routed, status, store, trust, watcher
 from .orders import Orders
 from .redact import count_hits_text
 
@@ -81,6 +83,8 @@ def cmd_work(a, cfg: dict) -> int:
             from . import slow
 
             print(slow.re_estimate(cfg, a.id, a.minutes or 0, a.why))
+        elif a.action == "verify":
+            print(status.work_verify(cfg, a.id))
         elif a.action == "done":
             print(status.work_done(cfg, a.id, a.note))
         else:
@@ -122,6 +126,29 @@ def intents_gaps(cfg: dict) -> list[str]:
     return gaps
 
 
+def duplicate_hooks(settings: Path) -> list[str]:
+    """Events for which the user's settings.json runs `hubkit hook <event>` more than once (each run double-counts). Read only."""
+    if not settings.exists():
+        return []
+    try:
+        hooks_cfg = json.loads(settings.read_text(encoding="utf-8")).get("hooks", {})
+    except ValueError, AttributeError:
+        return []
+    seen: dict[str, int] = {}
+    for blocks in hooks_cfg.values():
+        for block in blocks if isinstance(blocks, list) else []:
+            for h in block.get("hooks", []):
+                m = re.search(r"hubkit\S*\s+hook\s+(\w+)", str(h.get("command", "")))
+                if m:
+                    seen[m.group(1)] = seen.get(m.group(1), 0) + 1
+    return sorted(ev for ev, n in seen.items() if n > 1)
+
+
+def eod_scheduled() -> bool:
+    """True when a scheduler entry runs `hubkit ... eod`."""
+    return any("hubkit" in x and re.search(r"\beod\b", x) for x in compat.scheduler_lines())
+
+
 def cmd_doctor(a, cfg: dict) -> int:
     """Print config, bind, hook heartbeat and state health; exit 1 on secret-shaped strings or private terms."""
     sd = store.state(cfg)
@@ -138,6 +165,11 @@ def cmd_doctor(a, cfg: dict) -> int:
     print(f"orders.jsonl: {len(rows)} rows, {bad} bad lines")
     errs = store.read_rows(sd / "hook-errors.jsonl")[0]
     print(f"hook-errors.jsonl: {len(errs)} rows")
+    if not eod_scheduled():
+        print(f"WARNING no {compat.scheduler_name()} entry runs `hubkit eod`: the end-of-day review and its learning pass only happen when someone asks for them.")
+    dup = duplicate_hooks(Path(os.environ.get("HUBKIT_SETTINGS") or Path.home() / ".claude" / "settings.json"))
+    if dup:
+        print(f"WARNING settings.json runs hubkit hook more than once for: {', '.join(dup)}. Each run double-counts prompts and answers; remove the duplicate entries.")
     gaps = intents_gaps(cfg)
     if gaps:
         print(f"WARNING intents.toml lacks what intents.example.toml has: {', '.join(gaps)}. Copy those lines from the example; the checks they configure use built-in defaults or stay off.")
@@ -183,6 +215,15 @@ def main(argv: list[str] | None = None) -> int:
     hk.add_argument("--skills-dir", default="$HOME/.claude/skills")
     hk.add_argument("--merge-guard", action="store_true", help="include the warn-only PreToolUse merge check")
 
+    tr = sub.add_parser("trust")
+    tr.add_argument("action", choices=["record", "ls"])
+    tr.add_argument("--class", dest="cls", default="")
+    tr.add_argument("--outcome", default="")
+
+    ib = sub.add_parser("inbound")
+    ib.add_argument("action", choices=["ingest"])
+    ib.add_argument("--file", help="the inbox watcher's output (default: stdin)")
+
     k = sub.add_parser("asks")
     k.add_argument("action", choices=["ls"])
     k.add_argument("--since", default="12h", help="how far back, for example 30m, 12h, 2d")
@@ -202,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
     o.add_argument("--estimate", type=int, help="move: minutes this order should take (default: the usual time)")
 
     w = sub.add_parser("work")
-    w.add_argument("action", choices=["add", "done", "ls", "estimate", "block"])
+    w.add_argument("action", choices=["add", "done", "ls", "estimate", "block", "verify"])
     w.add_argument("id", nargs="?")
     w.add_argument("--kind", default="active")
     w.add_argument("--title", default="")
@@ -224,6 +265,8 @@ def main(argv: list[str] | None = None) -> int:
 
     st = sub.add_parser("status")
     st.add_argument("--json", action="store_true")
+    dg = sub.add_parser("digest")
+    dg.add_argument("--since", default="12h", help="how far back, for example 30m, 12h, 2d")
     e = sub.add_parser("eod")
     e.add_argument("--day")
     e.add_argument("--note", default="")
@@ -254,6 +297,10 @@ def main(argv: list[str] | None = None) -> int:
             print("\n".join(install.install_skills(Path(a.install).expanduser())))
         elif a.cmd == "hooks":
             print(install.hooks_block(a.skills_dir, a.merge_guard))
+        elif a.cmd == "trust":
+            print(trust.record(cfg, a.cls, a.outcome) if a.action == "record" else "\n".join(f"{c}: {m}" for c, m in sorted(trust.mode(cfg).items())) or "no outcomes recorded")
+        elif a.cmd == "inbound":
+            print("\n".join(inbound.ingest(cfg, Path(a.file).read_text(encoding="utf-8") if a.file else sys.stdin.read())) or "nothing new")
         elif a.cmd == "asks":
             print("\n".join(lessons.asks_lines(cfg, a.since)))
         elif a.cmd == "watch":
@@ -261,6 +308,8 @@ def main(argv: list[str] | None = None) -> int:
         elif a.cmd == "status":
             st_ = status.write_status(cfg)
             print(json.dumps(st_, indent=1) if a.json else status.render_block(cfg, Orders(cfg), st_))
+        elif a.cmd == "digest":
+            print("\n".join(status.digest(cfg, a.since)))
         elif a.cmd == "eod":
             day = a.day or store.day_of(cfg, time.time())
             out = status.eod(cfg, day, a.note)

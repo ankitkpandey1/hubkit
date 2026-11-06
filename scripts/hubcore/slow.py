@@ -481,11 +481,11 @@ def re_estimate(
     with store.locked(sd / "work.lock"):
         items = work_load(sd)
         hit = next(
-            (i for i in items if i["id"] == jid and i.get("kind") == "routed"), None
+            (i for i in items if i["id"] == jid and i.get("kind") in ("routed", "active", "priority")), None
         )
         if hit is None:
-            raise KeyError(f"no live routed item {jid}")
-        _need_more(jid, minutes, (now - routed.started_at(cfg, hit)) / 60)
+            raise KeyError(f"no live routed or own-work item {jid}")
+        _need_more(jid, minutes, (now - (routed.started_at(cfg, hit) if hit["kind"] == "routed" else hit["added"])) / 60)
         hit["estimates"] = [
             *hit.get("estimates", []),
             {"t": now, "min": minutes, "source": "hub", "why": store.safe(reason, 200)},

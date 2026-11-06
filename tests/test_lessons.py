@@ -200,3 +200,22 @@ def test_a_hand_opened_merge_order_naming_the_pr_silences_the_guard(env):
     env.run("order", "open", "--kind", "merge", "--quote", "merge 7505 on his word")  # no typed prompt in the record
     assert pretool(env, "gh pr merge 7505") == ""
     assert "merging #7506" in pretool(env, "gh pr merge 7506")
+
+
+def test_a_status_line_that_uses_the_word_done_is_not_a_done_claim(env):
+    env.bind()
+    prompts(env, "do three things: fix the log, tidy the docs, and reply to the thread")
+    for plain in ("Tests done: 12 passed, 0 failed.", "PR #101 status: review done, waiting on the merge.", "The build is complete for the first repo; the second is running.",
+                  "Step 2 finished. Starting step 3."):
+        assert stop(env, last_assistant_message=plain) is None, plain
+    for claim in ("Everything is done.", "I'm done.", "All set, nothing left."):
+        assert "have not re-read his words" in stop(env, last_assistant_message=claim)["reason"], claim
+
+
+def test_a_machine_named_release_server_opens_no_order_and_an_insult_at_a_tool_is_no_correction(env):
+    env.bind()
+    out = env.prompt("need to ssh into the release server now and check disk").stdout
+    assert "opened from the user's prompt" not in out and not env.run("order", "ls").stdout.strip().startswith("O-")
+    assert "opened from the user's prompt" in env.prompt("do the release now, merge both PRs").stdout
+    assert "CORRECTION" not in env.prompt("remove stupid ci from the workflow list").stdout
+    assert "CORRECTION" in env.prompt("you are stupid").stdout

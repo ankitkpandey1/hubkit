@@ -5,6 +5,8 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import re
+import shlex
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -127,8 +129,14 @@ def add(path: Path, cls: str, quote: str, day: str, gate: str = "?", basis: str 
             idx = max(i for i, ln in enumerate(block) if SEEN_RE.match(ln))
             block.insert(idx + 1, seen)
             _set_basis(block, basis)
+            addr = addressed(block)
+            note = ""
+            if addr and day > addr[0]:  # seen again after it was addressed: the rule did not work
+                if not field(block, "ineffective"):
+                    block.insert(next(i for i, ln in enumerate(block) if ln == "- seen:"), f"- ineffective: {day}")
+                note = f"; INEFFECTIVE: addressed {addr[0]} yet seen again. Enforce it in code or rewrite the rule"
             write_blocks(path, pre, blocks)
-            return f"repeat: {cls} now seen {len(seen_lines(block))}x"
+            return f"repeat: {cls} now seen {len(seen_lines(block))}x{note}"
         for name in ("situation", "wrong", "right", "evidence"):
             if not fields.get(name):
                 raise ValueError(f"new class needs --{name}")
@@ -142,7 +150,15 @@ def add(path: Path, cls: str, quote: str, day: str, gate: str = "?", basis: str 
     return f"added: {cls}"
 
 
-def mark_addressed(path: Path, cls: str, day: str, how: str, current: str, rules_mtime: float, rule_text: str = "") -> str:
+def run_check(cmd: str) -> bool:
+    """A deterministic check: a command (no shell) that exits 0 when the rule still holds."""
+    try:
+        return subprocess.run(shlex.split(cmd), capture_output=True, timeout=120, check=False).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def mark_addressed(path: Path, cls: str, day: str, how: str, current: str, rules_mtime: float, rule_text: str = "", check: str = "") -> str:
     """Mark a class fixed. Refused unless the overlay or SKILL.md changed since the entry was seen."""
     with locked_edit(path):
         pre, blocks = read_blocks(path)
@@ -159,14 +175,26 @@ def mark_addressed(path: Path, cls: str, day: str, how: str, current: str, rules
                 raise ValueError(f"refused: no rule line tagged [{cls}] in the overlay or SKILL.md; run learn.py promote first")
             if not changed:
                 raise ValueError(f"refused: overlay and SKILL.md unchanged since {cls} was seen; promote the rule first")
-            block[:] = [ln for ln in block if not ADDR_RE.match(ln)]
-            block.insert(next(i for i, ln in enumerate(block) if ln == "- seen:"), f"- addressed: {day} {clean(how)}")
+            if check and not run_check(check):
+                raise ValueError(f"refused: the check for {cls} does not pass now: {check}")
+            for other in blocks:  # a new rule must not break an earlier one's check
+                prior = field(other, "check")
+                if other is not block and prior and prior != "none" and not run_check(prior):
+                    raise ValueError(f"refused: this change breaks the check of {block_class(other)}: {prior}")
+            block[:] = [ln for ln in block if not ADDR_RE.match(ln) and not ln.startswith("- check: ")]
+            at = next(i for i, ln in enumerate(block) if ln == "- seen:")
+            block.insert(at, f"- check: {clean(check) if check else 'none'}")
+            block.insert(at, f"- addressed: {day} {clean(how)}")
             write_blocks(path, pre, blocks)
-            return f"addressed: {cls}"
+            return f"addressed: {cls}" + ("" if check else " (prose only: no deterministic check recorded)")
     raise KeyError(f"no class {cls}")
 
 
 PROMOTED = "## Promoted rules (learn.py promote)"
+
+
+EXPIRE_DAYS = 90  # an addressed class not seen for this long is a candidate to retire from the overlay
+OVERLAY_CAP = 200  # the overlay is read in full at every session start: past this a rule is retired or merged first
 
 
 def promote(path: Path, overlay: Path, cls: str, gate: str, rule: str) -> str:
@@ -194,6 +222,8 @@ def promote(path: Path, overlay: Path, cls: str, gate: str, rule: str) -> str:
         while stop > at + 1 and not lines[stop - 1].strip():
             stop -= 1
         lines.insert(stop, line)
+        if len(lines) > OVERLAY_CAP:
+            raise ValueError(f"refused: the overlay would have {len(lines)} lines, over its cap of {OVERLAY_CAP}. Retire or merge an older rule first")
         store.write_atomic(overlay, "\n".join(lines) + "\n")
     return f"promoted: {cls} -> {gate}"
 
@@ -213,7 +243,7 @@ def review(path: Path, day: str) -> dict[str, list[str]]:
     """Compare learnings with the day: new today, repeated today, and addressed status."""
     _, blocks = read_blocks(path)
     out: dict[str, list[str]] = {
-        "new": [], "repeated": [], "regressed": [], "holding": [], "unaddressed": []
+        "new": [], "repeated": [], "regressed": [], "holding": [], "unaddressed": [], "expire": [], "prose-only": []
     }
     for b in blocks:
         cls, dates = block_class(b), seen_dates(b)
@@ -222,6 +252,10 @@ def review(path: Path, day: str) -> dict[str, list[str]]:
         elif day in dates:
             out["repeated"].append(cls)
         addr = addressed(b)
+        if addr and field(b, "check") in ("", "none"):
+            out["prose-only"].append(cls)
+        if addr and not [d for d in dates if d > addr[0]] and (datetime.strptime(day, "%Y-%m-%d") - datetime.strptime(addr[0], "%Y-%m-%d")).days >= EXPIRE_DAYS:
+            out["expire"].append(f"{cls} (addressed {addr[0]}, not seen since)")
         if addr:
             after = [d for d in dates if d > addr[0]]
             (out["regressed"] if after else out["holding"]).append(

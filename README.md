@@ -31,8 +31,9 @@ In a live hub, the prompt hook opens that order itself from your sentence, and t
 - **Order clock.** Orders open from your own prompts (never from peer or harness text), each with a first-action limit, a stall limit and a definition of done checked by evidence on close.
 - **Routed-work tracking.** A hook on `SendMessage` and `Agent` records what the hub asked of whom, one item per (owner, PR). It follows last heard-from, moved heads and GitHub reviews at the PR head.
 - **Watchdog and wake-up.** `hubkit tick` (cron) and `hubkit watch` (a background process) raise alerts with back-off; a watch exit wakes an idle hub.
-- **Stop gate.** The Stop hook refuses to let the turn end while the hub owes something (no watch running, a stalled item, an unbacked verdict, a question to you that blocks nothing).
-- **Status, end-of-day review.** A status block at session start and on each prompt, a daily archive, and `hubkit eod`.
+- **Stop gate.** The Stop hook refuses to let the turn end while the hub owes something (no watch running, a stalled item, an unbacked verdict, a question to you that blocks nothing, a "tests pass" claim with no command run, a PR number with no link, an approval on red CI, built work not pushed).
+- **Tool guards.** An optional warn-only PreToolUse hook (`hubkit hooks --merge-guard`) warns about an unordered merge, a post without your typed yes, a banned command, stopping an agent and an unmarked decision card. It never denies.
+- **Status, digest, end-of-day review.** A status block at session start and on each prompt, a daily archive, `hubkit digest` for when you come back, `hubkit eod`, a per-class `hubkit trust` ledger, and `hubkit inbound ingest` to track asks from other people so none goes unanswered.
 
 `SKILL.md` is the behaviour contract the hub session reads. This file is the operator view.
 
@@ -126,12 +127,13 @@ Every key is documented in [docs/configuration.md](docs/configuration.md).
 
 | Behaviour | Strength |
 |---|---|
-| The Stop hook holds the turn while the hub owes something: no watch running, a stalled item, an unbacked verdict, an unsolved blocker, an item over its estimate, a "done" while your newest prompt is unread | Enforced (blocks the turn end) |
+| The Stop hook holds the turn while the hub owes something: no watch running, a stalled item, an unbacked verdict, an unsolved blocker, an item over its estimate, a "done" while your newest prompt is unread, a claim of passing tests with no command run, an approval while CI is not green | Enforced (blocks the turn end) |
 | An order closes only with the evidence its kind requires | Enforced (the close is refused) |
-| A learned class counts as fixed only if a rule for it exists | Enforced (the address is refused) |
-| A second job sent to a busy owner while an order is open; a brief that bans the action a blocker needs | Warning only |
-| `gh pr merge` with no live order naming that PR (the merge guard, `hubkit hook pretool`) | Warning only, never denies |
-| `hubkit doctor` warning when your `intents.toml` lacks keys the example has | Warning only |
+| A learned class counts as fixed only if a rule for it exists (and, with `--check`, its command passes) | Enforced (the address is refused) |
+| A merge order closes only with the merge commit sha | Enforced (the close is refused) |
+| A second job sent to a busy owner while an order is open; a brief that bans the action a blocker needs; a brief with no done-when, output or estimate line; more than 4 agents holding work | Warning only |
+| `gh pr merge` with no live order naming that PR, a post without your typed yes, a banned command, `TaskStop`, a repeated command, a whole-suite `pytest`, an unmarked decision card (`hubkit hook pretool`) | Warning only, never denies |
+| `hubkit doctor` warning when your `intents.toml` lacks keys the example has, a hook registered twice, or no scheduled `hubkit eod` | Warning only |
 
 Details and exact rules: [SKILL.md](SKILL.md) and [docs/architecture.md](docs/architecture.md#stop-gate-gatepy).
 

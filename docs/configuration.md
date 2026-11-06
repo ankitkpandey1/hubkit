@@ -81,6 +81,9 @@ Estimates and the slowness check (hub-internal, see architecture).
 | `waiting_min` | `3` | A peer waiting on a prompt this long raises `peer:<name>:waiting`. |
 | `active_s` | `120` | A busy holder whose transcript grew this recently is working, not stalled. |
 | `watch_grace_min` | `5` | Live work with no running `hubkit watch` this long raises `watch:dead`. |
+| `stale_agent_min` | `30` | A background agent that reported finished this long ago while its item is still listed raises `agent:<owner>:stale`. |
+| `reply_owed_min` | `60` | A `reply` item (from `hubkit inbound ingest`) open this long raises one alert. |
+| `verify_stale_min` | `180` | An `active` or `priority` item not stamped with `hubkit work verify` for this long raises an alert. |
 | `notify_user` | `true` | Use the platform default desktop notification for hub and peer alerts when `tools.notify_cmd` is empty. |
 
 ### `[stop_guard]`
@@ -101,6 +104,7 @@ Estimates and the slowness check (hub-internal, see architecture).
 | `review_stall_min` | `5` | Reviews: chase after this. |
 | `review_overdue_min` | `10` | Reviews: hard OVERDUE this long after routing, whatever the owner said. |
 | `skip_owners` | `["inbox"]` | Owners that are never tracked. |
+| `max_agents` | `4` | More distinct agents than this holding live routed work makes the routed hook warn. |
 | `min_chars` | `200` | A message without a PR is work only from this length. |
 | `gh_timeout_s` | `10` | Timeout for one `gh` read. |
 | `queued_wait_min` | `60` | Work queued "after X" gets no review clock until this long after the ask (or until a review shows). |
@@ -126,10 +130,19 @@ The first kind whose words match wins, so put the narrower kind first (`hotfix` 
 | `not_order_phrases` | Phrases that contain an order word but are not orders ("release notes"). |
 | `question_start` | Regex; an order word in a question is never an order, urgent words or not (the hook then says so and shows `hubkit order open` for opening one by hand). |
 | `unconfirmed_ttl_min` | `tick` expires unconfirmed orders after this long. |
+| `blocker_fix_min` | A blocker with no fix, or a fix with no result after this many minutes (default `3`), alerts and holds the Stop gate. |
 | `held_review_min` | A hold this long raises an alert. |
 | `cancel_words`, `resume_words` | Words for the cancel and resume verbs. |
 | `verb_max_chars` | Prompts longer than this never hold, cancel, resume or count as chases. |
 | `chase` | Regex; a short prompt matching it while an order is open is a chase. |
+
+### `[stop_gate]`
+| Key | Meaning |
+|---|---|
+| `blocked_words` | A final message with one of these, while an order is open and none has a fix on record, cannot end the turn. |
+| `unchecked_words` | "A person's call" style claims held when the turn made no lookup. |
+| `verified_words` | "Tests pass", "it works", "is deployed" style claims held when the turn ran no Bash command. |
+| `full_links` | Default `true`. Set `false` to stop holding messages that name a PR or issue number with no link. |
 
 ### `[corrections]` (the learn loop)
 | Key | Meaning |
@@ -146,6 +159,7 @@ The first kind whose words match wins, so put the narrower kind first (`hotfix` 
 | `stall_min` | No movement for this long raises an alert. |
 | `dispatch` | Text printed when the order opens. |
 | `done_when` | Evidence names `order close` requires (`--evidence name=value`). |
+| `sha_evidence` | Evidence names that must hold a commit sha (the example merge kind uses `["merged"]`). |
 | `movement_files` | Globs; a file touched after the order opened counts as movement. |
 
 Add your own kinds the same way; the words are matched as whole words, case-insensitively.

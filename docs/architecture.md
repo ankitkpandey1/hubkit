@@ -46,7 +46,7 @@ State lives in `$HUBKIT_STATE`, else `$XDG_STATE_HOME/hubkit` (default `~/.local
 | PostToolUse `AskUserQuestion` | `answer` | A card answer goes through the same intake and human-only filter as a typed prompt, and closes `ask` work items. |
 | PostToolUse `SendMessage\|Agent` | `routed` | Records or refreshes a routed-work item (see Routed work). One `gh` baseline read per named PR, 3 s in total. |
 | Stop | `stop` | The gate. Prints JSON `{"decision": "block", "reason": ...}` while the hub owes something. |
-| PreToolUse `Bash` | `pretool` | Warn-only merge guard: `gh pr merge` with no live order and none of his typed words naming the PR adds a warning as additional context. Never denies. Register it yourself in `settings.json`. |
+| PreToolUse `Bash\|TaskStop\|AskUserQuestion` | `pretool` | Warn-only guard; the warning goes in as additional context and nothing is ever denied. It warns on: `gh pr merge` with no live order and none of his typed words naming the PR; a post to a person or thread (`mep send|reply|post`, a chat send, `gh pr|issue comment|review`, a `gh api` comments or reviews call, or a Slack post or send) with no typed yes of his in the last 10 minutes; a banned command (`rm -rf`, `pkill`, `git reset --hard`, `git stash`, `git clean`, a forced push, `git checkout <ref> -- <path>`); the same command run 3 times in 10 minutes; `pytest` with no path, `-k` or `-m`; `TaskStop` without a stop word of his in the last 30 minutes; a decision card whose first option is not marked (Recommended). Register it with `hubkit hooks --merge-guard`, or add it to `settings.json` yourself. |
 | any | `record` | Schema canary. Every hub run writes the real payload's keys and value types (never values) to `payload-samples/`. |
 
 A hook failure is shown and logged (`hook-errors.jsonl`) only for the hub. The stop gate's own blocks are not counted as failures.
@@ -59,7 +59,7 @@ An order is a row family in `orders.jsonl` (`open`, `move`, `hold`, `resume`, `c
 - **Clock.** A first action is due within the kind's `first_action_min`; after that, movement (`order move`, or a touched `movement_files` glob) is due every `stall_min`. A deadline in the prompt ("in 30 min", "by 17:00") is parsed too.
 - **Holds.** Only explicit `hold_words` hold an order; `urgent_words` keep or restart the clock; `cancel_words` cancel. Long prompts (`verb_max_chars`) never hold or cancel.
 - **Chases.** A short prompt matching `intake.chase` while an order is open is recorded as a chase. Three chases print a stop-loss line.
-- **Close.** `order close` requires every evidence name the kind's `done_when` lists; `file:<path>` evidence must exist and be newer than the order. A closed order is archived under `archive/archive_<day>.jsonl`.
+- **Close.** `order close` requires every evidence name the kind's `done_when` lists; `file:<path>` evidence must exist and be newer than the order. Evidence names in the kind's `sha_evidence` (the merge kind's `merged`) must hold a commit sha. A closed order is archived under `archive/archive_<day>.jsonl`.
 
 ## Routed work (`routed.py`)
 
@@ -98,6 +98,9 @@ Every tick (cron with `--if-bound`, or inside `hubkit watch`) also checks things
 - **Notification.** New alerts go to `tools.notify_cmd` when set. With none set, only `hub:*` and `peer:*` alerts use the platform default (`notify-send` on Linux, `osascript` on macOS, when installed). Nothing here ever posts to chat.
 - **False alarms.** A silent item is not a stall while it is `blocked_on` another live job (`hubkit work block`), or while its holder's session is `busy` and its transcript is still growing (for up to 3x the limit). A head moved by the owner's own newest commit is progress, not a moved head. Every stall alert names the holder's state (`holder: ...`).
 - **Short asks.** A short message to a peer is tracked when a request verb opens a sentence or it ends in a question; acknowledgements, status questions and thanks are not.
+- **Own work.** `active` and `priority` items need an estimate within 5 minutes, say so out loud when over it, and raise a stale-verification alert when not stamped with `hubkit work verify` for `watcher.verify_stale_min`.
+- **Finished agents.** A background agent that reported finished more than `watcher.stale_agent_min` ago while its item is still listed raises `agent:<owner>:stale`.
+- **Inbound asks.** `hubkit inbound ingest` opens one `reply` item per message id from the inbox watcher's lines; one owed longer than `watcher.reply_owed_min` raises one alert.
 - **PRs are keyed by repo and number.** `owner/repo#N`, a full URL, or `<alias> N` for a `routed.repo_aliases` entry name their repo; only a bare `#N` falls back to `routed.repo`.
 
 ## Stop gate (`gate.py`)
@@ -110,7 +113,12 @@ The Stop hook blocks the end of the turn, with the exact next action, while any 
 4. A job with an estimate on record is past it and not yet addressed (see the slowness check).
 5. A blocker is not being solved (no fix running, fix past its limit), a STOP-LOSS has no result since, or the final message calls an open order blocked/down/failed/waiting while no order has a fix on record.
 6. The final message says done while his newest prompt is newer than the last `work done` and the last `hubkit asks ls`; or it calls something gone/lost/absent, or "a person's call", with no Read/Grep/Glob/Bash call in the turn (transcript read).
-7. The final message ends on a question (or holds a `stop_guard.phrases` phrase) and no `ask` work item says anything really waits on the user.
+7. The final message ends on a question (or holds a `stop_guard.phrases` phrase) and no `ask` work item says anything really waits on the user. A question that is really blocked on him must use the card tool, not prose. An `ask` item asked 3 times with no answer also holds the turn: take the safest default and record it.
+8. The final message says "tests pass", "it works" or "is deployed" (`[stop_gate] verified_words`) but the turn ran no Bash command; names a PR or issue number with no link (`[stop_gate] full_links`); approves a PR while CI at its head is not green; or reports built work while the repo at the hook's `cwd` has uncommitted changes or unpushed commits.
+
+## Digest and trust
+
+`hubkit digest [--since 12h]` prints what finished, which orders closed, the latest alerts and what waits on the user. `hubkit trust record --class C --outcome accept|edit|reject` appends to `trust.jsonl`; `trust ls` shows each class as `auto` (enough accepts and nothing else) or `ask` (propose first), and the session status block names the classes that earned `auto` and those he rejected.
 
 ## The learn loop
 
@@ -119,7 +127,7 @@ This is the adaptive part. The mechanism, in the order it runs (`hooks.py`, `lea
 1. **Detect.** The prompt hook injects a `CORRECTION` line, with the quote, when a typed prompt matches a `[corrections] patterns` regex or repeats a recent prompt (word-set similarity at least `repeat_similarity` within `repeat_window_min`).
 2. **Record** (`learn.py add`). The hub records a class of mistake: kebab-case class, the gate it broke (G1 to G8 in SKILL.md), the exact quote, situation, wrong, right, evidence. A repeat of an existing class appends a dated `seen` line. Each entry stores a `basis` hash of the rule texts (overlay plus SKILL.md) at the time. Every field is redacted; edits are locked and atomic.
 3. **Promote** (`learn.py promote-candidates`, then `learn.py promote <class> --gate G --rule "..."`). A class seen two or more times is a candidate. Promoting writes one short rule line tagged `[<class>]` into your overlay under its gate. Personal rules stay out of the shared `SKILL.md`.
-4. **Address** (`learn.py address --class <c> --how "..."`). The class is marked fixed only if the rules changed since the entry was last seen **and** a rule line tagged `[<class>]` exists. Otherwise it is refused: a fix without a rule is not a fix.
+4. **Address** (`learn.py address --class <c> --how "..."`). The class is marked fixed only if the rules changed since the entry was last seen **and** a rule line tagged `[<class>]` exists. Otherwise it is refused: a fix without a rule is not a fix. With `--check CMD` the command must also exit 0, and every earlier check must still pass. `promote` is refused when the overlay would pass 200 lines. A class seen again after it was addressed is marked ineffective.
 5. **Probation.** The status block shows at most five learnings seen in the last 30 days; an addressed class stays visible for 14 days as "probation". If the class is seen again after it was addressed, `hubkit eod` and `learn.py review` list it as regressed (a fix that did not work), and it is to be fixed the same day.
 
 hubkit does the detecting, storing, refusing and reporting; the hub model does the recording and the rule writing, so the loop only adapts as far as the hub follows it.

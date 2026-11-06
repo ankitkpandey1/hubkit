@@ -181,6 +181,7 @@ def unordered_chase_lines(cfg: dict, orders: Orders, text: str, now: float) -> l
         return []
     from . import slow
 
+    store.append_row(store.state(cfg) / "unordered-chases.jsonl", {"ts": now})
     jobs = slow.jobs(cfg, orders, now)
     return ["hubkit: no order is live, so this chase is on the job list:", *(slow.block_lines(jobs, now) or ["no live job either: say so plainly"])]
 
@@ -244,14 +245,17 @@ def hook_routed(cfg: dict, payload: dict) -> str:
             out += (f" DEFAULTED ({item.get('estimate_basis', '')}), the brief had no `Estimate: <n>m` line. "
                     f"Set it: hubkit work estimate {item['id']} --minutes N --why \"...\"")
     out += queue_warning(cfg, item)
+    for w in (lessons.brief_missing(cfg, str(ti.get("message") or ti.get("prompt") or "")), lessons.agent_cap_warning(cfg)):
+        out += f"\n{w}" if w else ""
     return out + (f"\n{forbids}" if forbids else "")
 
 
 def hook_pretool(cfg: dict, payload: dict) -> str:
-    """PreToolUse on Bash: warn (never deny) about a `gh pr merge` nobody ordered."""
-    if not is_hub(cfg, payload) or payload.get("tool_name") != "Bash":
+    """PreToolUse on Bash and TaskStop: warn (never deny) about an unordered merge, an unconfirmed post, a banned command, a stopped agent."""
+    tool = str(payload.get("tool_name") or "")
+    if not is_hub(cfg, payload) or tool not in ("Bash", "TaskStop", "AskUserQuestion"):
         return ""
-    warning = lessons.merge_warning(cfg, str((payload.get("tool_input") or {}).get("command") or ""))
+    warning = lessons.tool_warning(cfg, tool, payload.get("tool_input") or {})
     if not warning:
         return ""
     return json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": warning}})
@@ -275,7 +279,7 @@ def hook_stop(cfg: dict, payload: dict) -> str:
     store.touch_seen(sd, "stop")
     routed.scan_transcript(cfg, payload.get("transcript_path"))
     last = (payload.get("last_assistant_message") or "").strip()
-    reasons = gate.stop_reasons(cfg, last, transcript=payload.get("transcript_path"))
+    reasons = gate.stop_reasons(cfg, last, transcript=payload.get("transcript_path"), cwd=payload.get("cwd"))
     if not reasons:
         return ""
     store.append_row(sd / "stop-guard.jsonl", {"blocked": True, "reasons": [store.safe(r, 300) for r in reasons]})

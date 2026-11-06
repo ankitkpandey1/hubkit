@@ -302,6 +302,9 @@ class Orders:
                     problems.append(f"'{need}': {p} does not exist")
                 elif p.stat().st_mtime < o["opened"]:
                     problems.append(f"'{need}': {p} is older than the order")
+        for need in spec.get("sha_evidence", []):  # a merge is proven by the merge commit, not by a word
+            if need in evidence and not re.search(r"\b[0-9a-f]{7,40}\b", evidence[need]):
+                problems.append(f"'{need}' must name the merge commit sha (7+ hex characters)")
         problems += self._uncovered_prs(o, evidence)
         return problems
 
@@ -375,10 +378,34 @@ class Orders:
         """Chases per order for orders opened on `day` (local day)."""
         mine = [o for o in self.all().values() if store.day_of(self.cfg, o["opened"]) == day]
         chases = sum(o["chases"] for o in mine)
+        unordered = sum(1 for r in store.read_rows(self.sd / "unordered-chases.jsonl")[0] if store.day_of(self.cfg, r["ts"]) == day)
         return {
             "orders": len(mine), "chases": chases,
             "chases_per_order": round(chases / len(mine), 2) if mine else 0.0,
+            "unordered_chases": unordered,
         }
+
+
+PLACE = re.compile(r"(?i)\b\w+\s+(?:server|box|host|machine|env|environment)s?\b")
+
+
+def _without_places(text: str) -> str:
+    """"release server" names a machine; an order word next to a machine noun is a mention, not an order."""
+    return PLACE.sub(" ", text)
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9#]{5,}", text.lower())}
+
+
+def chase_relates(o: dict, text: str, chase_re: str, kind: str | None) -> bool:
+    """A chase counts on an order when it is bare ("eta?", "what is the hold up?") or names that order: its kind, a PR it holds, or words of its quote."""
+    if kind == o["kind"]:
+        return True
+    rest = _words(re.sub(chase_re, " ", text))
+    if not rest:
+        return True
+    return bool(rest & _words(" ".join([o["quote"], *o["refs"]])))
 
 
 def hook_intake(orders: Orders, text: str, now: float | None = None) -> list[str]:
@@ -395,14 +422,14 @@ def hook_intake(orders: Orders, text: str, now: float | None = None) -> list[str
 
     lines: list[str] = []
     short = len(text) <= int(intake.get("verb_max_chars", 120))
-    kind_text = text
+    kind_text = _without_places(text)
     for phrase in intake.get("not_order_phrases", []):  # "release notes" is not a release order
         kind_text = re.sub(re.escape(phrase), " ", kind_text, flags=re.I)
     kind = match_kind(orders.intents, kind_text)
     live = orders.live()
     start = intake.get("question_start", r"(?i)^\W*(why|what|how|did|does|do you|is|are|was|were|can|could|would|should|when|where|who|which|has|have)\b")
     statements = [s for s in re.split(r"(?<=[.!?])\s+|\n", text) if s.strip() and not (s.rstrip().endswith("?") or re.match(start, s))]
-    act = " ".join(statements)  # only a statement can order; a question never does, urgent word or not
+    act = _without_places(" ".join(statements))  # only a statement can order; a question never does, urgent word or not
     for phrase in intake.get("not_order_phrases", []):
         act = re.sub(re.escape(phrase), " ", act, flags=re.I)
     act_kind = match_kind(orders.intents, act)
@@ -453,7 +480,7 @@ def hook_intake(orders: Orders, text: str, now: float | None = None) -> list[str
     if chase_re and short and re.search(chase_re, text):
         stop = int(intake.get("stop_loss", 3))
         for o in live:
-            if o["id"] != opened_id and o["state"] == "open" and kind in (None, o["kind"]):
+            if o["id"] != opened_id and o["state"] == "open" and kind in (None, o["kind"]) and chase_relates(o, text, chase_re, kind):
                 if orders.recent_chase(o, now):
                     continue
                 orders.chase(o["id"], text)

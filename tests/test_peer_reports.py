@@ -29,21 +29,51 @@ def archived(env):
     return [r for f in (env.state / "archive").glob("archive_*.jsonl") for r in map(json.loads, f.read_text().splitlines()) if r.get("type") == "work"]
 
 
-def test_a_result_message_from_the_owner_closes_a_non_review_item_and_nothing_stalls(env):
+def test_a_result_message_from_the_owner_is_heard_but_never_closes_the_item(env):
     env.bind()
     send(env, "peer-a", f"Build the fix for {PR1}. Done-when: tests pass")
     age_routed(env, 40)
     out = deliver(env, peer_entry("peer-a", "Fix is pushed and the tests passed. PR 101 is ready."))
-    assert "STALLED" not in out and routed_items(env) == []
-    assert "owner reported its result" in archived(env)[0]["done_note"]
+    assert "STALLED" not in out
+    (item,) = routed_items(env)  # narration is not evidence
+    assert item["reported"] and archived(env) == []
+    age_routed(env, 40)
+    assert "that is a claim" in env.run("status").stdout
 
 
-def test_a_queued_result_message_closes_it_too(env):
+def test_a_reported_item_closes_when_the_pr_shows_the_artifact(env):
+    from test_hubkit import fake_gh
+
+    fake_gh(env, head="aaa1111")
+    env.bind()
+    send(env, "peer-a", f"Build the fix for {PR1}. Done-when: tests pass")
+    age_routed(env, 40)
+    deliver(env, peer_entry("peer-a", "Fix is pushed, tests passed."))
+    assert len(routed_items(env)) == 1
+    (env.root / "gh.json").write_text(json.dumps({"headRefOid": "bbb2222", "reviews": [], "statusCheckRollup": [{"conclusion": "SUCCESS"}]}))
+    env.run("tick", "--no-notify")
+    assert routed_items(env) == [] and "REPORTED by peer-a" in archived(env)[0]["done_note"]
+
+
+def test_a_reported_item_stays_open_while_the_pr_shows_nothing_new(env):
+    from test_hubkit import fake_gh
+
+    fake_gh(env, head="aaa1111")
+    env.bind()
+    send(env, "peer-a", f"Build the fix for {PR1}. Done-when: tests pass")
+    age_routed(env, 40)
+    deliver(env, peer_entry("peer-a", "Fix is pushed, tests passed."))
+    env.run("tick", "--no-notify")
+    assert len(routed_items(env)) == 1
+
+
+def test_a_queued_result_message_is_heard_too(env):
     env.bind()
     send(env, "peer-a", f"Build the fix for {PR1}. Done-when: tests pass")
     age_routed(env, 40)
     deliver(env, queued("peer-a", "step 4 done, all green"))
-    assert routed_items(env) == []
+    (item,) = routed_items(env)
+    assert item["reported"]
 
 
 def test_a_question_or_a_blocker_from_the_owner_is_heard_but_does_not_close(env):
@@ -52,7 +82,7 @@ def test_a_question_or_a_blocker_from_the_owner_is_heard_but_does_not_close(env)
     age_routed(env, 40)
     out = deliver(env, peer_entry("peer-a", "Which branch should this be done on?"), peer_entry("peer-a", "Fix is pushed but the tests failed, I am blocked on a host.", 10))
     (item,) = routed_items(env)
-    assert item["last_heard"] and "STALLED" not in out
+    assert item["last_heard"] and not item.get("reported") and "STALLED" not in out
 
 
 def test_a_report_on_a_review_item_leaves_it_to_the_pr_review(env):
@@ -61,7 +91,7 @@ def test_a_report_on_a_review_item_leaves_it_to_the_pr_review(env):
     age_routed(env, 40)
     deliver(env, peer_entry("peer-a", "Review done."))
     (item,) = routed_items(env)
-    assert item["review"] and item["last_heard"]
+    assert item["review"] and item["last_heard"] and not item.get("reported")
 
 
 def test_a_report_from_someone_else_closes_nothing(env):
@@ -69,7 +99,10 @@ def test_a_report_from_someone_else_closes_nothing(env):
     send(env, "peer-a", f"Build the fix for {PR1}. Done-when: tests pass")
     age_routed(env, 40)
     deliver(env, peer_entry("peer-b", "All done and merged."))
-    assert len(routed_items(env)) == 1
+    env.hook("prompt", {"session_id": "sess-hub", "origin": {"kind": "peer"},
+                        "prompt": '<cross-session-message from="uds:x" from-name="peer-b">\nAll done and merged.\n</cross-session-message>'})
+    (item,) = routed_items(env)
+    assert not item.get("reported")
 
 
 def test_an_owner_with_two_items_closes_only_the_one_the_report_names(env):
@@ -78,6 +111,6 @@ def test_an_owner_with_two_items_closes_only_the_one_the_report_names(env):
     send(env, "peer-a", f"Build the other fix for {PR2}. Done-when: tests pass")
     age_routed(env, 40)
     deliver(env, peer_entry("peer-a", "Finished, all done."))
-    assert len(routed_items(env)) == 2  # which job? the report does not say
+    assert not any(i.get("reported") for i in routed_items(env))  # which job? the report does not say
     deliver(env, peer_entry("peer-a", "PR 102 is finished and merged.", 5))
-    assert [i["prs"] for i in routed_items(env)] == [[PR1]]
+    assert [i["prs"] for i in routed_items(env) if i.get("reported")] == [[PR2]]

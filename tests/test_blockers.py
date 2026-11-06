@@ -144,3 +144,22 @@ def test_a_chase_with_no_order_prints_the_job_lines(env):
     out = env.prompt("any progress?").stdout
     assert "no order is live" in out and "job W1" in out
     assert "no order is live" not in env.prompt("tell me about the design of the cache layer in detail please, thanks").stdout
+
+
+def test_a_question_that_only_matches_the_chase_pattern_is_not_a_chase_on_an_unrelated_order(env):
+    env.bind()
+    env.prompt("hotfix now: merge https://github.com/acme/repo/pull/101")
+    env.backdate(2)
+    assert "chase recorded" not in env.prompt("why is hubkit status not showing the watcher alert in its block").stdout
+    assert "chase recorded" in env.prompt("any progress on the hotfix merge for 101?").stdout
+
+
+def test_promote_refuses_past_the_overlay_cap_and_leaves_the_file_alone(env):
+    ov = env.root / "overlay.md"
+    ov.write_text("# rules\n" + "".join(f"- rule {n}\n" for n in range(196)))
+    env.learn("add", "--class", "cap-one", "--gate", "G1", "--quote", "q", "--situation", "s", "--wrong", "w", "--right", "r", "--evidence", "e")
+    before = ov.read_text()
+    r = env.learn("promote", "cap-one", "--gate", "G1", "--rule", "A new rule.")
+    assert r.returncode == 2 and "over its cap of 200" in r.stderr and ov.read_text() == before
+    ov.write_text("# rules\n" + "".join(f"- rule {n}\n" for n in range(100)))
+    assert env.learn("promote", "cap-one", "--gate", "G1", "--rule", "A new rule.").returncode == 0

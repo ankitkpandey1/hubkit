@@ -43,7 +43,7 @@ A human prompt containing an order word (words come from `intents.toml`; hotfix,
 - **(a2) Saying it is blocked is not solving it.** A final message that calls an open order blocked, down, failed or waiting on a host, tool or person is held until a block record with a fix exists (word list: `intents.toml` `[stop_gate]`). *Enforced in code.*
 - **(b) An urgent step never queues behind other work on a busy agent.** Send it to a free owner. The routed hook warns when a second job goes to an owner already holding a live job while an order is open. *Warning enforced in code; the choice of owner is prose.*
 - **(f) Re-read his words before saying done.** `hubkit asks ls --since 12h` prints his recent prompts one per line; a final message that says done while his newest prompt is newer than the last `work done` and the last `asks ls` is held. *Enforced in code.*
-- **(g) A merge is done on his order only.** `hubkit hook pretool` (register it as a PreToolUse hook on Bash) warns, never denies, on `gh pr merge` with no live order and none of his typed words naming that PR. *Warning only.*
+- **(g) A merge is done on his order only.** `hubkit hook pretool` (register it with `hubkit hooks --merge-guard`) warns, never denies, on `gh pr merge` with no live order and none of his typed words naming that PR; the same hook also warns on posts without his typed yes, banned commands, stopping an agent and an unmarked decision card. *Warning only.*
 - **(c) An agent's "that is a person's call" is checked, not relayed.** Read what the person already decided (the record, the order's words) before asking or telling anyone it needs them. *Checked in code:* a final message that relays "a person's call" with no Read/Grep/Glob/Bash call in that turn is held at the Stop gate (words: `intents.toml` `[stop_gate] unchecked_words`).
 - **(d) Before saying something is gone or absent, read the code that writes it.** A missing file, row or log line is proof of nothing until you know what produces it and when. *Checked in code:* a final message that says something is gone, lost or absent, with no lookup in that turn, is held the same way.
 - **(e) A brief must not forbid the one action that clears the blocker.** Before sending a brief, check its banned-command list against the step the order needs. *Checked in code:* the routed hook warns when a brief's "do not / never" line shares a key word with an open order's blocker or fix.
@@ -80,7 +80,7 @@ Silence on routed work past `stall_min` (reviews: `review_stall_min`, hard `OVER
 - At most 15 lines. Lead with what changed or what the user must decide. Tag claims verified / read / inferred. Full URLs. Times in the user's zone.
 - One line names what was left out and where it is. Input needed: the question tool after the report, recommended option first.
 - Hand over all PRs of a wave in one list, only when reviewed and ready.
-- Code or commands for the user go to a file, not a raw block (the overlay may name the clipboard step).
+- Code or commands for the user go to a file, not a raw block (the overlay may name the clipboard step). A one-line resume command is the exception: put it in the message as typed.
 
 ## 8. End of day
 

@@ -34,7 +34,7 @@ Copy `intents.example.toml` to `intents.toml` only when the user wants to change
 
 ## 4. Register the hooks
 
-1. `hubkit hooks --skills-dir <skills dir>` prints the `hooks` block for `~/.claude/settings.json` (SessionStart, UserPromptSubmit, PostToolUse for questions and routed work, Stop). Add `--merge-guard` for the warn-only PreToolUse merge check.
+1. `hubkit hooks --skills-dir <skills dir>` prints the `hooks` block for `~/.claude/settings.json` (SessionStart, UserPromptSubmit, PostToolUse for questions and routed work, Stop). Add `--merge-guard` for the warn-only PreToolUse guard (merges, posts, banned commands, stopping an agent, decision cards).
 2. Back up `~/.claude/settings.json` to `settings.json.bak-<date>`, merge the block in (keep every existing hook; a hubkit entry already there is replaced, not duplicated), and write valid JSON.
 3. Tell the user that hooks load at the next session start.
 

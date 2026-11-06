@@ -17,7 +17,7 @@ from .orders import Orders
 from .redact import redact
 
 VERSION = 1
-WORK_KINDS = ("active", "tracked", "priority", "routed", "ask")
+WORK_KINDS = ("active", "tracked", "priority", "routed", "ask", "reply")
 STALE_MIN = 15
 MAX_BLOCK_LINES = 25
 
@@ -62,14 +62,34 @@ def work_add(cfg: dict, kind: str, title: str, owner: str = "", note: str = "", 
     if kind not in WORK_KINDS:
         raise ValueError(f"kind must be one of {WORK_KINDS}")
     sd = store.state(cfg)
+    if kind == "ask" and not note.strip():
+        raise ValueError("an ask needs --note: the ordered work it blocks. A question that blocks nothing is not asked")
     with store.locked(sd / "work.lock"):
         items = work_load(sd)
+        again = next((i for i in items if kind == "ask" and i.get("kind") == "ask" and i["title"].strip().lower() == title.strip().lower()), None)
+        if again is not None:  # asking the same thing again is counted, not a new item
+            again["asked"] = int(again.get("asked", 1)) + 1
+            work_save(sd, items)
+            return again
         item = redact_obj({"id": next_work_id(sd, items), "kind": kind, "title": title, "owner": owner,
                            "note": note, "added": time.time(),
                            **({"estimate_min": estimate, "estimates": [{"t": time.time(), "min": estimate, "source": "brief"}]} if estimate else {})})
         items.append(item)
         work_save(sd, items)
     return item
+
+
+def work_verify(cfg: dict, wid: str) -> str:
+    """Stamp a work item as checked against reality just now."""
+    sd = store.state(cfg)
+    with store.locked(sd / "work.lock"):
+        items = work_load(sd)
+        hit = next((i for i in items if i["id"] == wid), None)
+        if hit is None:
+            raise KeyError(f"no live item {wid}")
+        hit["verified"] = time.time()
+        work_save(sd, items)
+    return f"{wid} verified {store.clock(cfg, hit['verified'])}"
 
 
 def work_done(cfg: dict, wid: str, note: str = "") -> str:
@@ -192,7 +212,9 @@ def block_learnings(cfg: dict, lpath: Path) -> list[dict]:
             continue
         addr = learnings.addressed(b)
         tag = ""
-        if addr:
+        if learnings.field(b, "ineffective"):
+            tag = " (INEFFECTIVE: addressed yet seen again; enforce in code or rewrite)"
+        elif addr:
             if (now - time.mktime(time.strptime(addr[0], "%Y-%m-%d"))) > 14 * 86400:
                 continue
             tag = " (probation: addressed " + addr[0] + ")"
@@ -292,9 +314,10 @@ def render_block(cfg: dict, orders: Orders, st: dict | None, now: float | None =
                 if kind == "priority" and any(i["kind"] == "active" for i in st["work"]):
                     ahead = " | AHEAD: active work is running while this waits; switch, or say why not"
                 out.append(f"{kind}: " + "; ".join(f"{i['id']} {i['title']}" for i in mine) + ahead)
-        from . import routed
+        from . import routed, trust
 
         out += routed.block_lines(cfg, st["work"], now)
+        out += trust.lines(cfg)
         m = st["mep"]
         if m["state"] in ("ok", "stale"):
             out.append(f"on the user (mep): {m['count']}; first: " + " | ".join(m["titles"][:3])
@@ -336,6 +359,23 @@ def held_rows(orders: Orders, oid: str) -> list[dict]:
     return [r for r in store.read_rows(orders.path)[0] if r.get("id") == oid and r.get("op") == "hold"]
 
 
+def own_work_alerts(cfg: dict, now: float) -> list[dict]:
+    """The hub's own work (active, priority) needs an estimate, and an overrun one is said out loud."""
+    out = []
+    for i in work_load(store.state(cfg)):
+        if i.get("kind") not in ("active", "priority"):
+            continue
+        age = (now - i["added"]) / 60
+        est = i.get("estimate_min")
+        if est is None and age > 5:
+            out.append({"key": f"{i['id']}:no_estimate", "msg": f"{i['id']} {i['title'][:50]}: own work with no estimate after {int(age)} min. NEXT: hubkit work estimate {i['id']} --minutes N --why \"<basis>\""})
+        elif (now - float(i.get("verified") or i["added"])) / 60 > float(cfg["watcher"]["verify_stale_min"]) and age > float(cfg["watcher"]["verify_stale_min"]):
+            out.append({"key": f"{i['id']}:unverified", "msg": f"{i['id']} {i['title'][:50]}: last checked against reality {int((now - float(i.get('verified') or i['added'])) / 60)} min ago. NEXT: check it, then: hubkit work verify {i['id']}"})
+        elif est is not None and age > float(est):
+            out.append({"key": f"{i['id']}:own_over", "msg": f"{i['id']} {i['title'][:50]}: {int(age)} min spent, estimate {est:g}. NEXT: finish it, or re-estimate with a reason: hubkit work estimate {i['id']} --minutes N --why \"..\""})
+    return out
+
+
 def evaluate(cfg: dict, orders: Orders, hook_err: dict, now: float) -> list[dict]:
     """Watchdog conditions that hold now, as alert dicts."""
     found: list[dict] = []
@@ -371,11 +411,13 @@ def evaluate(cfg: dict, orders: Orders, hook_err: dict, now: float) -> list[dict
             found.append({"key": f"{o['id']}:deadline",
                           "msg": f"{o['id']} {o['kind']}: past its deadline {store.clock(cfg, o['deadline'])}"})
     try:
-        from . import routed, slow, watcher
+        from . import inbound, routed, slow, watcher
 
         found += routed.alerts(cfg, now)
         found += slow.alerts(cfg, orders, now)
         found += watcher.checks(cfg, orders, now)
+        found += inbound.alerts(cfg, now)
+        found += own_work_alerts(cfg, now)
     except Exception as e:  # routed tracking must not break the tick
         found.append({"key": "routed:failed", "msg": f"routed-work check failed: {type(e).__name__}"})
     if hook_err["count"]:
@@ -499,6 +541,32 @@ def glance(cfg: dict, day: str) -> list[str]:
         f"  addressed but repeated (not fixed): {', '.join(rev['regressed']) or '-'}",
         f"  seen 2+ times, not addressed (promote or fix): {', '.join(rev['unaddressed']) or '-'}",
     ]
+
+
+def digest(cfg: dict, span: str = "12h", now: float | None = None) -> list[str]:
+    """What happened since `span` ago, for a user coming back: work finished, orders closed, alerts, what waits on him."""
+    from .lessons import parse_span
+
+    now = now or time.time()
+    since = now - parse_span(span)
+    sd = store.state(cfg)
+    arch: list[dict] = []
+    for back in range(0, int((now - since) // 86400) + 2):
+        day = store.day_of(cfg, now - back * 86400)
+        arch += store.read_rows(sd / "archive" / f"archive_{day}.jsonl")[0]
+    arch = [r for r in arch if float(r.get("ts", 0)) >= since]
+    work = [r for r in arch if r.get("type") == "work"]
+    orders = [r for r in arch if r.get("type") == "order"]
+    alerts = [r for r in store.read_rows(sd / "alerts.jsonl")[0] if float(r.get("ts", 0)) >= since]
+    live = work_load(sd)
+    asks = [i for i in live if i.get("kind") == "ask"]
+    out = [f"Digest, last {span}"]
+    out += [f"  finished {r['id']}: {r.get('title', '')} ({r.get('done_note') or 'no note'})" for r in work] or ["  nothing finished"]
+    out += [f"  order {r['id']} {r.get('outcome')}" for r in orders]
+    out += [f"  alert: {r.get('msg', '')}" for r in alerts[-5:]]
+    out += [f"  waits on you {i['id']}: {i.get('title', '')}" for i in asks] or ["  nothing waits on you"]
+    out.append(f"  still live: {len(live) - len(asks)} job(s)")
+    return out
 
 
 def reflection(cfg: dict, day: str) -> list[str]:

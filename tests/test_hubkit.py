@@ -141,7 +141,7 @@ def test_chases_per_order_metric(env):
     r = env.prompt("eta?")
     assert "chase recorded" in r.stdout
     m = json.loads(env.run("order", "metrics").stdout)
-    assert m == {"orders": 1, "chases": 2, "chases_per_order": 2.0}
+    assert m == {"orders": 1, "chases": 2, "chases_per_order": 2.0, "unordered_chases": 0}
 
 
 def test_repeated_order_is_neither_second_order_nor_chase(env):
@@ -2065,7 +2065,7 @@ def test_close_evidence_must_cover_every_pr_named_in_the_order(env):
     oid = order_ids(env)[0]
     r = env.run("order", "close", oid, "--evidence", f"merged={PR1}")
     assert r.returncode == 2 and "#102" in r.stderr and "#7418" in r.stderr and "#101" not in r.stderr
-    r = env.run("order", "close", oid, "--evidence", "merged=101 102 and PR #7418 merged")
+    r = env.run("order", "close", oid, "--evidence", "merged=101 102 and PR #7418 merged at abc1234")
     assert r.returncode == 0 and "closed" in r.stdout
 
 

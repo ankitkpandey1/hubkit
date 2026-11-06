@@ -36,6 +36,7 @@ def main() -> int:
     ad.add_argument("--class", dest="cls", required=True)
     ad.add_argument("--how", required=True)
     ad.add_argument("--date", default=date.today().isoformat())
+    ad.add_argument("--check", default="", help="a command that exits 0 while the rule holds; every earlier check must still pass")
     pm = sub.add_parser("promote", help="write a short rule into the overlay under its gate")
     pm.add_argument("cls")
     pm.add_argument("--gate", required=True)
@@ -68,7 +69,7 @@ def main() -> int:
             ov = [f for f in (learnings.overlay_path(cfg), config.SKILL_DIR / "SKILL.md") if f.exists()]
             print(learnings.mark_addressed(path, args.cls, args.date, args.how, learnings.rules_hash(cfg),
                                            max(f.stat().st_mtime for f in ov),
-                                           "\n".join(f.read_text(encoding="utf-8", errors="replace") for f in ov)))
+                                           "\n".join(f.read_text(encoding="utf-8", errors="replace") for f in ov), args.check))
         elif args.cmd == "promote":
             print(learnings.promote(path, learnings.overlay_path(cfg), args.cls, args.gate, args.rule))
         elif args.cmd == "review":

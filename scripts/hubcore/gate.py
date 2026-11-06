@@ -65,6 +65,23 @@ def unverified_verdict(cfg: dict, last: str) -> list[str]:
     return sorted(routed.pr_num(u) for u in urls.values() if not _reviewed_at_head(cfg, u, timeout))
 
 
+def ci_not_green(cfg: dict, last: str) -> list[str]:
+    """PRs the message gives an approving verdict on while CI at the head is failing or pending. A PR is resolved from
+    its URL, a repo-qualified ref or `routed.repo`; a bare number is matched to a tracked item's PR."""
+    out: list[str] = []
+    timeout = float(routed.opts(cfg)["gh_timeout_s"])
+    tracked = [u for i in routed.items(cfg) for u in [*i["prs"], *i.get("queue", [])]]
+    for sentence in re.split(r"(?<=[.!?])\s+|\n", last):
+        if not (re.search(r"(?i)\bapprov", sentence) and (PR_REF.search(sentence) or REPO_PR.search(sentence)) and not AWAITING.search(sentence)):
+            continue
+        for ref in routed.refs(cfg, sentence):
+            for u in [ref] if ref.startswith("http") else [t for t in tracked if routed.same_pr(t, ref)]:
+                info = routed.pr_info(cfg, u, timeout)
+                if info and info.get("ci") in ("failing", "pending"):
+                    out.append(f"#{routed.pr_num(u)} ({info['ci']})")
+    return sorted(set(out))
+
+
 def _reviewed_at_head(cfg: dict, url: str, timeout: float) -> bool:
     """True when GitHub shows a non-author review at the head, or cannot be read (an unreadable PR proves nothing)."""
     info = routed.pr_info(cfg, url, timeout)
@@ -124,21 +141,32 @@ def blocker_reasons(cfg: dict, last: str, now: float) -> list[str]:
     return out
 
 
-def stop_reasons(cfg: dict, last: str, now: float | None = None, transcript: str | None = None) -> list[str]:
+def stop_reasons(cfg: dict, last: str, now: float | None = None, transcript: str | None = None, cwd: str | None = None) -> list[str]:
     """Every reason the turn cannot end yet, each with its exact action. Empty = the turn may end."""
     now = now or time.time()
+    ci_bad = ci_not_green(cfg, last)  # before prompt_lines: a reviewed item closes there
     reasons = routed.prompt_lines(cfg, now)
     reasons += blocker_reasons(cfg, last, now)
-    reasons += [r for r in (lessons.unswept_asks(cfg, last, now), lessons.unchecked_claim(cfg, last, transcript)) if r]
+    if r := lessons.unpushed_work(last, cwd):
+        reasons.append(r)
+    reasons += [r for r in (lessons.unswept_asks(cfg, last, now), lessons.unchecked_claim(cfg, last, transcript), lessons.unrun_claim(cfg, last, transcript)) if r]
+    if refs := lessons.bare_refs(cfg, last):
+        reasons.append(f"hubkit: your message names {', '.join(refs[:4])} with no link. NEXT: give the full URL of each PR or issue so he can click it")
     try:
         reasons += slow.gate_lines(cfg, now)
     except Exception as e:  # a failing estimate check must not wedge the hub's turn end
         store.append_row(store.state(cfg) / "hook-errors.jsonl", {"where": "slow.gate", "error": repr(e)[:200]})
     if open_work(cfg) and not watch_live(cfg):
         reasons.append(f"hubkit: nothing will wake you when routed work stalls. NEXT: start in the background: {WATCH_CMD}")
+    reasons += [f"hubkit: the ask {i['id']} ({i['title'][:50]}) was asked {i['asked']} times with no answer. Stop asking. NEXT: take the safest default, record it with the reason, "
+                f"and go on: hubkit work done {i['id']} --note \"defaulted to ...\"" for i in work_load(store.state(cfg)) if i.get("kind") == "ask" and int(i.get("asked", 1)) >= 3]
     for n in unverified_verdict(cfg, last):
         reasons.append(f"hubkit: your message gives a verdict on #{n}, but GitHub shows no review at its current head "
                        "(agent words are not evidence). NEXT: correct the message; relay a verdict only after the item closes itself")
+    if ci_bad:
+        reasons.append(f"hubkit: your message approves {', '.join(ci_bad)} but CI at the head is not green. NEXT: say CI is not green, or wait for it, before relaying an approval")
+    if (r := lessons.prose_ask(last, transcript, is_question(cfg, last) and blocked_on_user(cfg))):
+        reasons.append(r)
     if is_question(cfg, last) and not blocked_on_user(cfg):
         reasons.append("hubkit: you ended on a question to the user but nothing is blocked on him. NEXT: settle it from the record "
                        "or route it; only if it truly needs him run: hubkit work add --kind ask --title \"<the one question>\" --note \"<ordered work it blocks>\"")

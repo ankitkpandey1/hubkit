@@ -28,14 +28,14 @@ DEFAULTS: dict = {
         "extensions_dir": "",  # default: <config dir>/ext
     },
     "tools": {"mep": "mep", "notify_cmd": "", "gh": "gh"},
-    "routed": {"stall_min": 15, "min_chars": 200, "skip_owners": ["inbox"], "gh_timeout_s": 10,
+    "routed": {"stall_min": 15, "min_chars": 200, "max_agents": 4, "skip_owners": ["inbox"], "gh_timeout_s": 10,
                "repo": "", "reply_window_min": 60, "queued_wait_min": 60, "owner_logins": {}, "skip_briefs": ["mep watch", "inbox watch"],
         "activity_globs": [
             "~/.claude/projects/*/*/subagents/agent-{id}.jsonl",
             "/tmp/claude-*/*/*/tasks/{id}.output",
         ], "reviewer_logins": [], "review_words": ["review"], "review_stall_min": 5, "review_overdue_min": 10},
     "slow": {"min_samples": 3, "order_default_min": 30, "floor_min": 2, "tool_min": 2, "scan_kb": 2048},
-    "watcher": {"stale_agent_min": 30, "stuck_min": 30, "unhandled_min": 10, "waiting_min": 3, "active_s": 120, "watch_grace_min": 5, "notify_user": True},
+    "watcher": {"stale_agent_min": 30, "reply_owed_min": 60, "verify_stale_min": 180, "stuck_min": 30, "unhandled_min": 10, "waiting_min": 3, "active_s": 120, "watch_grace_min": 5, "notify_user": True},
     "mep": {"enabled": True, "timeout_s": 30},
     "watchdog": {"transcript_scan_hours": 24, "cron_stale_min": 15},
     "think": {"decisions": ""},  # path of the active slug's decisions.md; its last lines go in the status block

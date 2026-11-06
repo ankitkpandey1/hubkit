@@ -41,7 +41,7 @@ def test_hooks_block_is_valid_settings_json_with_every_event(env):
     assert any("hook answer" in c for c in cmds) and any("hook routed" in c for c in cmds)
     assert all("$HOME/.claude/skills/hub/scripts/hubkit" in h["command"] for gs in block.values() for g in gs for h in g["hooks"])
     guarded = json.loads(env.run("hooks", "--merge-guard").stdout)["hooks"]
-    assert guarded["PreToolUse"][0]["matcher"] == "Bash" and "hook pretool" in guarded["PreToolUse"][0]["hooks"][0]["command"]
+    assert guarded["PreToolUse"][0]["matcher"] == "Bash|TaskStop|AskUserQuestion" and "hook pretool" in guarded["PreToolUse"][0]["hooks"][0]["command"]
 
 
 @pytest.mark.skipif(not shutil.which("uv"), reason="needs uv to build and install a wheel")
@@ -72,3 +72,20 @@ def test_doctor_warns_when_the_users_intents_lack_a_section_the_example_has(env)
     assert "WARNING intents.toml lacks" in r.stdout and "[stop_gate]" in r.stdout and r.returncode == 0
     mine.write_text(text, encoding="utf-8")
     assert "WARNING intents.toml" not in env.run("doctor").stdout
+
+
+def test_doctor_warns_about_a_hook_registered_twice_and_an_eod_that_is_never_scheduled(env):
+    from test_hubkit import fake_crontab
+
+    cmd = "python3 ~/.claude/skills/hub/scripts/hubkit hook prompt"
+    twice = {"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": cmd}]}, {"hooks": [{"type": "command", "command": cmd}]}]}}
+    once = {"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": cmd}]}]}}
+    settings = env.root / "settings.json"
+    scheduled = fake_crontab(env, "0 21 * * * python3 ~/.claude/skills/hub/scripts/hubkit eod\n")
+    settings.write_text(json.dumps(twice))
+    out = env.run("doctor", HUBKIT_SETTINGS=str(settings), **scheduled).stdout
+    assert "more than once for: prompt" in out and "runs `hubkit eod`" not in out
+    settings.write_text(json.dumps(once))
+    unscheduled = fake_crontab(env, "*/5 * * * * python3 ~/.claude/skills/hub/scripts/hubkit tick\n")
+    out = env.run("doctor", HUBKIT_SETTINGS=str(settings), **unscheduled).stdout
+    assert "more than once" not in out and "runs `hubkit eod`" in out

@@ -7,7 +7,7 @@
 | Verb | What it does |
 |---|---|
 | `skills --install DIR` | Copies the hub, hub-mep and hubkit-setup skills into DIR (re-run refreshes; the running copy is left alone). |
-| `hooks [--skills-dir DIR] [--merge-guard]` | Prints the `hooks` JSON for settings.json. `--merge-guard` adds the warn-only PreToolUse merge guard. Never edits settings.json. |
+| `hooks [--skills-dir DIR] [--merge-guard]` | Prints the `hooks` JSON for settings.json. `--merge-guard` adds the warn-only PreToolUse guard (matcher `Bash|TaskStop|AskUserQuestion`, see [architecture](architecture.md#hooks-scriptshubcorehookspy)). Never edits settings.json. |
 | `hubkit bind [--pid N]` | Bind this session (found by walking up the process tree, or the process `N`) as the hub. Interactive sessions only; refuses while another hub is live. |
 | `hubkit unbind` | Remove the bind. |
 | `hubkit status [--json]` | Rebuild `status.json` and print the status block (or the JSON). |
@@ -16,6 +16,10 @@
 | `hubkit order open --kind K --quote "..." [--unconfirmed]` | Open an order by hand. |
 | `hubkit order confirm ID` | Turn an unconfirmed order into an open one. |
 | `hubkit order move ID --note "..." [--estimate N]` | Record real movement. The first move also records the order's estimate (N minutes, else the usual time for its kind; printed when defaulted). |
+| `hubkit digest [--since 12h]` | What finished, which orders closed, the latest alerts and what waits on the user, for a user coming back. |
+| `hubkit inbound ingest [--file F]` | Turns the inbox watcher's lines into `reply` work items (one per asker, no duplicates). |
+| `hubkit trust record --class C --outcome O` / `trust ls` | Per-class record of approved and corrected outcomes; a class with repeated corrections is shown as ask-first. |
+| `hubkit work verify ID` | Stamp the item as checked against reality just now. An `active` or `priority` item not verified for `watcher.verify_stale_min` raises an alert. It runs no check itself. |
 | `hubkit asks ls [--since 12h]` | His recent prompts (from `recent-prompts.jsonl`), one line each, newest last. Marks the asks as re-read for the Stop gate. |
 | `hubkit order block ID --on "..." [--fix "..."] [--holder who]` | Record what blocks an order and the fix running now (a second call with the same `--on` adds the fix). No fix, or a fix older than `blocker_fix_min` with no result, alerts and holds the Stop gate. |
 | `hubkit order result ID --note "..."` | Record the result of an action: movement, clears the blocker and any STOP-LOSS. Notes from `order move` do neither. |
@@ -34,8 +38,8 @@
 | `hubkit tick [--if-bound] [--no-notify]` | One watchdog pass; prints `ALERT ...` lines. `--if-bound` is a no-op unless a hub is bound or an order is open (for cron). |
 | `hubkit watch [--interval S] [--max-cycles N]` | Loop `tick` (defaults 300 s, 12 cycles). Exits 0 printing `ALERT ...`, 3 after the cycles, 4 if another watch runs. |
 | `hubkit eod [--day D] [--note ".."]` | Write and print the end-of-day review. |
-| `hubkit doctor [--check-clean]` | Print config, state, bind, hook heartbeats, ledger health and a count of secret-shaped strings in state. `--check-clean` also lists checkout files containing a `private.terms` word. Exit 1 on a problem. |
-| `hubkit hook EVENT` | Run one hook (`session`, `prompt`, `answer`, `routed`, `stop`, `record`); reads the payload from stdin. For Claude Code, not for people. |
+| `hubkit doctor [--check-clean]` | Print config, state, bind, hook heartbeats, ledger health and a count of secret-shaped strings in state. Warns when your `intents.toml` lacks keys the example has, when a hubkit hook is registered twice in `settings.json` (read only), and when no scheduler entry runs `hubkit eod`. `--check-clean` also lists checkout files containing a `private.terms` word. Exit 1 on a problem. |
+| `hubkit hook EVENT` | Run one hook (`session`, `prompt`, `answer`, `routed`, `stop`, `record`, `pretool`); reads the payload from stdin. For Claude Code, not for people. |
 
 ## learn.py
 
@@ -47,8 +51,8 @@
 | `list [--last N]` | The N most recently seen entries (default 30). |
 | `promote-candidates [--min N]` | Classes seen at least N times (default 2). |
 | `promote CLASS --gate G --rule "..."` | Write a rule line tagged `[CLASS]` into the overlay under its gate. |
-| `address --class C --how "..."` | Mark a class fixed. Refused unless the overlay or SKILL.md changed since it was last seen and holds a `[C]` rule line. |
-| `review [--day D]` | New, repeated, regressed, holding and unaddressed classes for a day. |
+| `address --class C --how "..." [--check CMD]` | Mark a class fixed. Refused unless the overlay or SKILL.md changed since it was last seen and holds a `[C]` rule line. `--check` also runs a command that must exit 0 first, and every earlier `--check` must still pass. Promote is refused past the overlay's 200-line cap. |
+| `review [--day D]` | New, repeated, regressed, holding and unaddressed classes for a day, plus rules to expire (addressed and not seen since) and rules that exist only as prose. A class seen again after it was addressed is marked ineffective. |
 
 ## Example
 
