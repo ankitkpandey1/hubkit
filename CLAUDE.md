@@ -7,7 +7,7 @@ Guidance for an agent changing hubkit. Read `README.md` for what it does and `SK
 ```
 SKILL.md                  behaviour contract for the hub session (keep under ~200 lines)
 README.md                 operator view          docs/  architecture, configuration, commands, troubleshooting
-LICENSE (Apache-2.0)      pyproject.toml  ruff, mypy, pytest settings    .github/workflows/ci.yml
+LICENSE (Apache-2.0)      pyproject.toml  ruff, mypy, pytest settings
 config.example.toml       generic config template   intents.example.toml   generic intents
 references/               design notes
 scripts/hubkit            entry point (hooks never raise; an import failure is logged and exits 0)

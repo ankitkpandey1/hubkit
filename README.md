@@ -159,10 +159,10 @@ All OS-specific code is in one module, `scripts/hubcore/compat.py` (standard lib
 | OS | Status |
 |---|---|
 | Linux | Full test suite run and passing here (ruff, mypy, pytest). |
-| macOS | The `ps` code path is exercised on Linux against the real `ps` (`tests/test_compat.py`), and mypy checks it with `--platform darwin`. Never run on a Mac. Not claimed to work until the CI run below is green. |
-| Windows | The `ctypes` and `msvcrt` code is type-checked with `--platform win32` only. Never run on Windows. Tests that need a POSIX `sh` shim for `gh`, `crontab` or a notifier are skipped there. Not claimed to work until the CI run is green. There is no default desktop notification on Windows: set `tools.notify_cmd`. |
+| macOS | The `ps` code path is exercised on Linux against the real `ps` (`tests/test_compat.py`), and mypy checks it with `--platform darwin`. Never run on a Mac. Not claimed to work until someone runs it there. |
+| Windows | The `ctypes` and `msvcrt` code is type-checked with `--platform win32` only. Never run on Windows. Tests that need a POSIX `sh` shim for `gh`, `crontab` or a notifier are skipped there. Not claimed to work until someone runs it there. There is no default desktop notification on Windows: set `tools.notify_cmd`. |
 
-`.github/workflows/ci.yml` runs the tests on Linux, macOS and Windows. It has not been pushed, so no run exists yet. Update this table from the first real run, not before. On Windows the schedule is a Task Scheduler task whose name or command holds `hubkit` (for example `schtasks /create /sc minute /mo 5 /tn hubkit-tick /tr "python %USERPROFILE%\.claude\skills\hub\scripts\hubkit tick --if-bound"`), and hooks in `settings.json` call `python ...\hubkit hook <event>`.
+There is no CI. Update this table only from a real run on that OS. On Windows the schedule is a Task Scheduler task whose name or command holds `hubkit` (for example `schtasks /create /sc minute /mo 5 /tn hubkit-tick /tr "python %USERPROFILE%\.claude\skills\hub\scripts\hubkit tick --if-bound"`), and hooks in `settings.json` call `python ...\hubkit hook <event>`.
 
 ## Limits and known gaps
 

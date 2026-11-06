@@ -1,4 +1,4 @@
-"""compat.py against real processes and real files. Runs on every OS in the CI matrix."""
+"""compat.py against real processes and real files. Meant to run on every OS."""
 
 import os
 import shutil
