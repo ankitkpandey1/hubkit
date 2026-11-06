@@ -38,7 +38,7 @@ In a live hub, the prompt hook opens that order itself from your sentence, and t
 
 ## Requirements
 
-- Linux. hubkit has only been run on Linux; macOS and Windows code exists but has never been run (see [Platform support](#platform-support)).
+- Linux. hubkit has only been run on Linux so far (see [Platform support](#platform-support)).
 - Python 3.14 or newer (the code uses `except A, B:` without parentheses, PEP 758). Standard library only.
 - [Claude Code](https://code.claude.com), which provides the hooks and the skills directory.
 - Optional: `gh` (GitHub CLI) on `PATH` for PR checks; without it items show "PR unknown". Optional: [`mep`](https://pypi.org/project/miseenplace-cli/) for a personal task list in the status block; without it the block shows `mep: UNVERIFIED (mep CLI not found ...)`, and `[mep] enabled = false` silences that.
@@ -50,7 +50,7 @@ Install hubkit with `uv tool install hubkit-cli`, run `hubkit skills --install D
 for your tool, then run the hubkit-setup skill and follow it. Ask me only for things you cannot find out yourself.
 ```
 
-hubkit runs on Claude Code hooks, so the skills directory is Claude Code's: `~/.claude/skills` (user level) or `.claude/skills` (project level). The PyPI name `hubkit-cli` is free as of 2026-11-06 and is not published yet; until it is, install straight from GitHub with `uv tool install git+https://github.com/ankitkpandey1/hubkit` (or from a clone with `uv tool install ./hubkit`).
+hubkit runs on Claude Code hooks, so the skills directory is Claude Code's: `~/.claude/skills` (user level) or `.claude/skills` (project level). `hubkit-cli` is on [PyPI](https://pypi.org/project/hubkit-cli/). To install the latest commit instead: `uv tool install git+https://github.com/ankitkpandey1/hubkit`.
 
 `hubkit skills --install DIR` copies three skills into `DIR`: `hub` (the rules and the scripts the hooks run), `hub-mep` (optional) and `hubkit-setup` (finds your facts, writes the config, registers the hooks, binds, proves it with `hubkit doctor`). Run it again after an upgrade to refresh the copies. `hubkit hooks --skills-dir DIR` prints the hooks block for `~/.claude/settings.json`.
 
@@ -154,19 +154,11 @@ python3 tests/run_reverts.py        # each guard reverted in a copy must fail it
 
 ## Platform support
 
-All OS-specific code is in one module, `scripts/hubcore/compat.py` (standard library only): process start time and parent (`/proc` on Linux, `ps` on macOS, kernel32 through `ctypes` on Windows), file locks (`flock`, or `msvcrt` on Windows), the scheduler check (`crontab -l`, or `schtasks /query` on Windows) and UTF-8 stdio.
-
-| OS | Status |
-|---|---|
-| Linux | Full test suite run and passing here (ruff, mypy, pytest). |
-| macOS | The `ps` code path is exercised on Linux against the real `ps` (`tests/test_compat.py`), and mypy checks it with `--platform darwin`. Never run on a Mac. Not claimed to work until someone runs it there. |
-| Windows | The `ctypes` and `msvcrt` code is type-checked with `--platform win32` only. Never run on Windows. Tests that need a POSIX `sh` shim for `gh`, `crontab` or a notifier are skipped there. Not claimed to work until someone runs it there. There is no default desktop notification on Windows: set `tools.notify_cmd`. |
-
-There is no CI. Update this table only from a real run on that OS. On Windows the schedule is a Task Scheduler task whose name or command holds `hubkit` (for example `schtasks /create /sc minute /mo 5 /tn hubkit-tick /tr "python %USERPROFILE%\.claude\skills\hub\scripts\hubkit tick --if-bound"`), and hooks in `settings.json` call `python ...\hubkit hook <event>`.
+hubkit has only been run on Linux so far, and the full test suite, ruff and mypy pass there. The code has paths for macOS and Windows, all in `scripts/hubcore/compat.py` (process lookup, file locks, scheduler check, UTF-8 stdio), but they have never been run on those systems. Treat them as unsupported until someone does.
 
 ## Limits and known gaps
 
-- Python 3.14 only. macOS and Windows are written but unproven; see Platform support.
+- Python 3.14 only, and Linux only so far; see Platform support.
 - It targets one hub per machine. A second live hub is refused at bind.
 - Order creation takes a blocking `flock` (`scripts/hubcore/orders.py`); a process that holds the lock forever stalls order opens.
 - A hook payload with no `origin` field is treated as human input.

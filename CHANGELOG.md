@@ -5,7 +5,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 ## [Unreleased]
 
 ### Added
-- Install like miseenplace: `uv tool install hubkit-cli` (wheel built and installed in a scratch venv; not published), `hubkit skills --install DIR` (hub, hub-mep, hubkit-setup), `hubkit hooks [--skills-dir DIR] [--merge-guard]` prints the settings.json hooks block, and a `hubkit-setup` skill.
+- Install like miseenplace: `uv tool install hubkit-cli` (published on PyPI as 0.1.0), `hubkit skills --install DIR` (hub, hub-mep, hubkit-setup), `hubkit hooks [--skills-dir DIR] [--merge-guard]` prints the settings.json hooks block, and a `hubkit-setup` skill.
 - macOS and Windows support through one platform module (`hubcore/compat.py`); only Linux has been run so far.
 - Blockers (`order block|result`), watcher fixes, peer-report closing, `asks ls`, and warn-only merge guard.
 - Apache-2.0 license, `README.md` rewrite, `docs/` (architecture, configuration, commands, troubleshooting), `CONTRIBUTING.md`, `SECURITY.md`.
