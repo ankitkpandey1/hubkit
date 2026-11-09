@@ -80,3 +80,17 @@ def test_digest_lists_what_finished_and_what_waits_on_the_user(env):
     out = env.run("digest", "--since", "1h").stdout
     assert "finished" in out and "Fix the importer" in out and "merged as 1a2b3c4" in out
     assert "waits on you" in out and "Merge #101 now?" in out
+
+
+def test_the_block_shows_when_each_work_item_was_last_checked(env):
+    env.bind()
+    env.run("work", "add", "--kind", "tracked", "--title", "the invoice run")
+    p = env.state / "work.json"
+    rows = json.loads(p.read_text())
+    rows[0]["added"] -= 90 * 60
+    p.write_text(json.dumps(rows))
+    env.run("tick", "--no-notify")
+    assert "the invoice run (checked 90m ago)" in env.hook("session", {"session_id": "sess-hub", "source": "compact"}).stdout
+    env.run("work", "verify", "W1")
+    env.run("tick", "--no-notify")
+    assert "the invoice run (checked 0m ago)" in env.hook("session", {"session_id": "sess-hub", "source": "compact"}).stdout

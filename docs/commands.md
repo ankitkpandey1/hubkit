@@ -19,6 +19,7 @@
 | `hubkit digest [--since 12h]` | What finished, which orders closed, the latest alerts, what waits on the user, the PRs his account opened and what each peer session was asked, for a user coming back. |
 | `hubkit inbound ingest [--file F]` | Turns the inbox watcher's lines into `reply` work items (one per asker, no duplicates). |
 | `hubkit trust record --class C --outcome O` / `trust ls` | Per-class record of approved and corrected outcomes; a class with repeated corrections is shown as ask-first. |
+| `hubkit how ls` / `show NAME` / `match TEXT` / `save NAME --trigger X --steps-file F --quote Q [--replace]` | Playbooks in `<config dir>/playbooks/`: a prompt that matches a trigger gets the steps injected; an order or imperative prompt with none is told to save one, and the Stop hook holds the turn end until it is. `--replace` keeps the old file as `.bak-<date>`. |
 | `hubkit work verify ID` | Stamp the item as checked against reality just now. An `active` or `priority` item not verified for `watcher.verify_stale_min` raises an alert. It runs no check itself. |
 | `hubkit find WORD [--since 2d]` | Searches orders, work, the archive, his asks, peer session prompts and the PRs his account opened (title, body, changed file paths). Needs `gh` for the PR part; a `gh` failure is printed as UNKNOWN, never skipped. Read only on peer sessions; prompts are redacted. |
 | `hubkit asks ls [--since 12h]` | His recent prompts (from `recent-prompts.jsonl`), one line each, newest last. Marks the asks as re-read for the Stop gate. |

@@ -38,7 +38,7 @@ def test_hooks_block_is_valid_settings_json_with_every_event(env):
     block = json.loads(env.run("hooks", "--skills-dir", "$HOME/.claude/skills").stdout)["hooks"]
     assert set(block) == {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"}
     cmds = [h["command"] for g in block["PostToolUse"] for h in g["hooks"]]
-    assert any("hook answer" in c for c in cmds) and any("hook routed" in c for c in cmds)
+    assert any("hook answer" in c for c in cmds) and any("hook routed" in c for c in cmds) and any("hook skill" in c for c in cmds)
     assert all("$HOME/.claude/skills/hub/scripts/hubkit" in h["command"] for gs in block.values() for g in gs for h in g["hooks"])
     guarded = json.loads(env.run("hooks", "--merge-guard").stdout)["hooks"]
     assert guarded["PreToolUse"][0]["matcher"] == "Bash|TaskStop|AskUserQuestion" and "hook pretool" in guarded["PreToolUse"][0]["hooks"][0]["command"]

@@ -11,9 +11,26 @@ import time
 import tomllib
 from pathlib import Path
 
-from . import compat, config, hooks, inbound, install, ledger, lessons, routed, status, store, trust, watcher
+from . import compat, config, hooks, inbound, install, ledger, lessons, playbooks, routed, status, store, trust, watcher
 from .orders import Orders
 from .redact import count_hits_text
+
+
+def cmd_how(a: argparse.Namespace, cfg: dict) -> int:
+    if a.action == "ls":
+        print("\n".join(f"{pb['name']}: {', '.join(pb['triggers'])}" for pb in playbooks.load_all()) or "no playbooks")
+    elif a.action == "show":
+        pb = playbooks.get(a.arg)
+        print(f"{pb['name']} (updated {pb['updated']}; triggers: {', '.join(pb['triggers'])})\n{pb['steps']}")
+        print("".join(f"quote: {q}\n" for q in pb["quotes"]), end="")
+    elif a.action == "match":
+        print("\n".join(playbooks.inject(playbooks.match(a.arg))) or "NO PLAYBOOK")
+    else:
+        if not a.steps_file:
+            raise ValueError("save needs --steps-file")
+        print(playbooks.save(a.arg, a.trigger, Path(a.steps_file).expanduser().read_text(encoding="utf-8"), a.quote, a.replace))
+        playbooks.note_saved(cfg, time.time())
+    return 0
 
 
 def kv(pairs: list[str]) -> dict[str, str]:
@@ -270,6 +287,13 @@ def main(argv: list[str] | None = None) -> int:
     fd.add_argument("--since", default="2d", help="how far back for asks, peer prompts and PRs, for example 12h, 2d")
     dg = sub.add_parser("digest")
     dg.add_argument("--since", default="12h", help="how far back, for example 30m, 12h, 2d")
+    hw = sub.add_parser("how", help="playbooks: how his recurring commands are done")
+    hw.add_argument("action", choices=["ls", "show", "save", "match"])
+    hw.add_argument("arg", nargs="?", default="", help="show/save: the playbook name; match: the text")
+    hw.add_argument("--trigger", action="append", default=[], help="save: a word or phrase, or re:<regex>; repeatable")
+    hw.add_argument("--steps-file", default="")
+    hw.add_argument("--quote", action="append", default=[], help="save: his words that asked for this")
+    hw.add_argument("--replace", action="store_true", help="save: overwrite an existing playbook (the old one is kept as .bak-<date>)")
     e = sub.add_parser("eod")
     e.add_argument("--day")
     e.add_argument("--note", default="")
@@ -304,6 +328,8 @@ def main(argv: list[str] | None = None) -> int:
             print(trust.record(cfg, a.cls, a.outcome) if a.action == "record" else "\n".join(f"{c}: {m}" for c, m in sorted(trust.mode(cfg).items())) or "no outcomes recorded")
         elif a.cmd == "inbound":
             print("\n".join(inbound.ingest(cfg, Path(a.file).read_text(encoding="utf-8") if a.file else sys.stdin.read())) or "nothing new")
+        elif a.cmd == "how":
+            return cmd_how(a, cfg)
         elif a.cmd == "asks":
             print("\n".join(lessons.asks_lines(cfg, a.since)))
         elif a.cmd == "watch":

@@ -1242,7 +1242,7 @@ def _mtime(path: str) -> float | None:
         return None
 
 
-def _advance(item: dict, det: dict, now: float) -> dict:
+def _advance(cfg: dict, item: dict, det: dict, now: float) -> dict:
     """A queue item's current PR has its review: move to the next PR with a fresh clock."""
     done, rest = item["queue"][0], item["queue"][1:]
     item["queue"] = rest if len(rest) > 1 else []
@@ -1264,7 +1264,7 @@ def _advance(item: dict, det: dict, now: float) -> dict:
     return {
         "key": f"{item['id']}:queue_advanced:{pr_num(done)}",
         "msg": (
-            f"{item['id']} to {item['owner']}: {_pr_no(done)} {det['state']} at {det['commit'][:7]}; the clock restarts on the next PR. NEXT: read the review on GitHub and act on it"
+            f"{item['id']} to {item['owner']}: {_pr_no(done)} {det['state']} at {det['commit'][:7]}; the clock restarts on the next PR. NEXT: {next_step(cfg, det, item['owner'])}"
         ),
     }
 
@@ -1464,7 +1464,7 @@ def refresh_prs(cfg: dict, now: float) -> list[dict]:
             if done and i.get("queue"):
                 cur = i["prs"][0]
                 if cur in done:
-                    msgs.append(_advance(i, done[cur], now))
+                    msgs.append(_advance(cfg, i, done[cur], now))
             elif done:
                 msgs.append(_close_landed(cfg, i, done, now))
                 if not i["prs"]:

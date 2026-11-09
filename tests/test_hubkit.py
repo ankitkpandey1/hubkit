@@ -2205,3 +2205,45 @@ def test_a_pr_with_review_as_a_noun_is_still_a_review_item(env, text):
     env.bind()
     send(env, "peer-a", text, "ask")
     assert [i["review"] for i in routed_items(env)] == [True]
+
+
+RELOAD = "hubkit: hub skill not loaded since compaction. NEXT: Skill hub, then read the overlay"
+
+
+def skill_payload(sid="sess-hub", skill="hub"):
+    return {"hook_event_name": "PostToolUse", "session_id": sid, "tool_name": "Skill", "tool_input": {"skill": skill}}
+
+
+def stop_payload(sid="sess-hub"):
+    return {"hook_event_name": "Stop", "session_id": sid, "last_assistant_message": "ok"}
+
+
+def test_stop_blocks_until_the_hub_skill_is_loaded_after_session_start(env):
+    env.bind()
+    assert env.hook("stop", stop_payload()).stdout == ""  # no SessionStart yet: nothing owed
+    env.hook("session", {"session_id": "sess-hub", "source": "compact"})
+    out = json.loads(env.hook("stop", stop_payload()).stdout)
+    assert out["decision"] == "block" and RELOAD in out["reason"]
+    assert RELOAD in env.prompt("what is the status").stdout  # the prompt hook says it too
+    env.hook("skill", skill_payload(skill="other"))  # another skill does not clear it
+    assert "block" in env.hook("stop", stop_payload()).stdout
+    r = env.hook("skill", skill_payload())
+    assert r.returncode == 0 and r.stdout == ""
+    assert env.hook("stop", stop_payload()).stdout == ""
+    assert RELOAD not in env.prompt("what is the status").stdout
+
+
+def test_reload_gate_is_a_noop_outside_the_bound_hub(env):
+    hub = env.bind()
+    env.session(sid="other")
+    env.hook("session", {"session_id": "sess-hub", "source": "startup"})
+    assert env.hook("session", {"session_id": "other", "source": "startup"}).stdout == ""
+    assert env.hook("stop", stop_payload("other")).stdout == ""
+    assert env.hook("skill", skill_payload("other")).stdout == ""
+    assert "block" in env.hook("stop", stop_payload()).stdout  # the other session's skill call did not clear the hub's marker
+    f = env.sessions / f"{hub.pid}.json"  # headless: the gate stays silent
+    d = json.loads(f.read_text())
+    d["kind"] = "sdk-cli"
+    f.write_text(json.dumps(d))
+    r = env.hook("stop", stop_payload())
+    assert r.returncode == 0 and r.stdout == ""

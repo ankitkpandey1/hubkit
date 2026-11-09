@@ -313,7 +313,7 @@ def render_block(cfg: dict, orders: Orders, st: dict | None, now: float | None =
                 ahead = ""
                 if kind == "priority" and any(i["kind"] == "active" for i in st["work"]):
                     ahead = " | AHEAD: active work is running while this waits; switch, or say why not"
-                out.append(f"{kind}: " + "; ".join(f"{i['id']} {i['title']}" for i in mine) + ahead)
+                out.append(f"{kind}: " + "; ".join(f"{i['id']} {i['title']} (checked {int((now - float(i.get('verified') or i['added'])) / 60)}m ago)" for i in mine) + ahead)
         from . import routed, trust
 
         out += routed.block_lines(cfg, st["work"], now)

@@ -219,3 +219,54 @@ def test_a_machine_named_release_server_opens_no_order_and_an_insult_at_a_tool_i
     assert "opened from the user's prompt" in env.prompt("do the release now, merge both PRs").stdout
     assert "CORRECTION" not in env.prompt("remove stupid ci from the workflow list").stdout
     assert "CORRECTION" in env.prompt("you are stupid").stdout
+
+
+# ---- pending-on-the-user lists need a lookup in the same turn ----
+
+
+def test_a_list_of_items_pending_on_the_user_with_no_lookup_is_held(env):
+    env.bind()
+    msg = "Three items are pending on you: the merge, the draft and the invoice."
+    held = stop(env, last_assistant_message=msg, transcript_path=transcript(env, []))
+    assert "pending on him" in held["reason"] and "read nothing" in held["reason"]
+    assert stop(env, last_assistant_message=msg, transcript_path=transcript(env, ["Bash"])) is None
+    assert stop(env, last_assistant_message="Nothing is pending on you.", transcript_path=transcript(env, [])) is None
+
+
+# ---- a draft asked for is a work item until it is sent or discarded ----
+
+
+def work_titles(env):
+    p = env.state / "work.json"
+    return [i["title"] for i in json.loads(p.read_text())] if p.exists() else []
+
+
+def test_a_draft_ask_opens_one_work_item_closed_by_send_or_discard(env):
+    env.bind()
+    env.prompt("write me a standup draft for today")
+    env.prompt("make the draft shorter")
+    assert [t for t in work_titles(env) if t.startswith("draft: ")] == ["draft: write me a standup draft for today"]
+    env.hook("pretool", {"hook_event_name": "PreToolUse", "session_id": "sess-hub", "tool_name": "Bash", "tool_input": {"command": "mep send standup.md"}})
+    assert work_titles(env) == []
+    env.prompt("draft a reply to the invoice mail")
+    assert len(work_titles(env)) == 1
+    env.prompt("discard the draft")
+    assert work_titles(env) == []
+    env.prompt("what is the status")
+    assert work_titles(env) == []
+
+
+def test_a_brief_banning_admin_while_a_release_order_is_open_is_warned(env):
+    env.bind()
+    env.prompt("do the release now, finish it asap")
+    brief = "Run the release. Output: prod live. " + LONG + "\nNever use --admin to merge."
+    assert "release.py runs that itself" in send(env, "peer-a", brief, "release").stdout
+    assert "release.py runs that itself" not in send(env, "peer-b", brief.replace("Never use --admin", "Never touch billing"), "other").stdout
+
+
+def test_words_inside_pasted_content_open_no_order(env):
+    env.bind()
+    env.prompt("<pasted_content>status: the release is blocked on smoke</pasted_content> what do you think?")
+    assert env.rows("orders.jsonl") == []
+    env.prompt("do the release now, finish it asap <pasted_content>old report</pasted_content>")
+    assert len([r for r in env.rows("orders.jsonl") if r["op"] == "open"]) == 1

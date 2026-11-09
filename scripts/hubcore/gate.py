@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import time
 
-from . import lessons, routed, slow, store
+from . import lessons, playbooks, routed, slow, store
 from .orders import PR_REF, Orders
 from .status import work_load
 
@@ -149,7 +149,7 @@ def stop_reasons(cfg: dict, last: str, now: float | None = None, transcript: str
     reasons += blocker_reasons(cfg, last, now)
     if r := lessons.unpushed_work(last, cwd, transcript):
         reasons.append(r)
-    reasons += [r for r in (lessons.unswept_asks(cfg, last, now), lessons.unchecked_claim(cfg, last, transcript), lessons.unrun_claim(cfg, last, transcript)) if r]
+    reasons += [r for r in (lessons.unswept_asks(cfg, last, now), lessons.unchecked_claim(cfg, last, transcript), lessons.pending_claim(cfg, last, transcript), lessons.unrun_claim(cfg, last, transcript)) if r]
     if refs := lessons.bare_refs(cfg, last):
         reasons.append(f"hubkit: your message names {', '.join(refs[:4])} with no link. NEXT: give the full URL of each PR or issue so he can click it")
     try:
@@ -165,6 +165,8 @@ def stop_reasons(cfg: dict, last: str, now: float | None = None, transcript: str
                        "(agent words are not evidence). NEXT: correct the message; relay a verdict only after the item closes itself")
     if ci_bad:
         reasons.append(f"hubkit: your message approves {', '.join(ci_bad)} but CI at the head is not green. NEXT: say CI is not green, or wait for it, before relaying an approval")
+    if cmd := playbooks.missing(cfg):
+        reasons.append(f"hubkit: '{cmd}' was done with no playbook to follow, and none was saved. NEXT: hubkit how save <name> --trigger <word> --steps-file <file> --quote \"<his words>\"")
     if (r := lessons.prose_ask(last, transcript, is_question(cfg, last) and blocked_on_user(cfg))):
         reasons.append(r)
     if is_question(cfg, last) and not blocked_on_user(cfg):

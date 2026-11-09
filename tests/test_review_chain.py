@@ -82,3 +82,13 @@ def test_a_reviews_own_stated_estimate_sets_its_hard_limit(env):
     assert "past the hard limit" not in env.prompt("carry on").stdout
     age_routed(env, 40)
     assert "past the hard limit" in env.prompt("carry on").stdout
+
+
+def test_a_queue_advance_after_an_approval_names_the_merge_step_not_read_the_review(env):
+    fake_gh(env, head="aaa1111")
+    env.bind()
+    urls = [f"https://github.com/acme/repo/pull/{n}" for n in (201, 202, 203)]
+    send(env, "peer-a", "Gated review of the queue: " + " ".join(urls), "review the queue")
+    gh_json(env, "aaa1111", [review("aaa1111")], statusCheckRollup=[{"conclusion": "SUCCESS"}])
+    out = env.run("tick", "--no-notify").stdout
+    assert "restarts on the next PR" in out and "--match-head-commit aaa1111" in out and "read the review" not in out

@@ -113,6 +113,15 @@ UNCHECKED_WORDS = [
     "needs her call",
     "needs a human decision",
 ]
+PENDING_WORDS = [
+    "pending on you",
+    "pending on the user",
+    "waiting on you",
+    "waiting for you",
+    "open on you",
+    "still on you",
+    "on your plate",
+]
 LOOKUP_TOOLS = ("Read", "Grep", "Glob", "Bash")
 
 
@@ -179,6 +188,20 @@ def unchecked_claim(cfg: dict, last: str, transcript: str | Path | None) -> str 
     return (
         f"hubkit: your message claims {hit!r} but this turn read nothing. A report that something is gone, or is a person's call, "
         "is checked, not relayed. NEXT: read the code or record that writes it (or what he already decided), then say it"
+    )
+
+
+def pending_claim(cfg: dict, last: str, transcript: str | Path | None) -> str | None:
+    """A reason when the message lists items pending on the user and this turn made no lookup: that list is read now, not remembered."""
+    from .gate import _asserted
+
+    words = Orders(cfg).intents.get("stop_gate", {}).get("pending_words", PENDING_WORDS)
+    hit = next((s.strip()[:100] for s in re.split(r"(?<=[.!?])\s+|\n", last) if any(_asserted(s.lower(), w.lower()) for w in words)), None)
+    if not hit or lookups_this_turn(transcript) != 0:
+        return None
+    return (
+        f"hubkit: your message lists what is pending on him ({hit!r}) but this turn read nothing. That list goes stale in minutes. "
+        "NEXT: read the open items now (mep ls, or the record that holds them), then say it"
     )
 
 
@@ -295,6 +318,23 @@ def brief_forbids_fix(cfg: dict, brief: str) -> str | None:
                     "NEXT: reword it, or allow that step explicitly"
                 )
     return None
+
+
+RELEASE_COMMANDS = ["--admin"]  # flags release.py itself runs: a brief must not ban them while a release order is open
+
+
+def release_ban_warning(cfg: dict, brief: str) -> str | None:
+    """The line of a brief that bans a command release.py runs itself, while a release order is open."""
+    orders = Orders(cfg)
+    words = orders.intents.get("stop_gate", {}).get("release_commands", RELEASE_COMMANDS)
+    oid = next((o["id"] for o in orders.live() if o["state"] == "open" and o["kind"] == "release"), None)
+    line = next((ln for ln in brief.splitlines() if oid and FORBID.search(ln) and any(w in ln for w in words)), None)
+    if not line:
+        return None
+    return (
+        f"hubkit WARNING: this brief says {line.strip()[:100]!r} while release order {oid} is open, but release.py runs that itself "
+        "(master needs --admin because a required check never reports). NEXT: remove the ban; the release runner does exactly what the script does"
+    )
 
 
 # ---- merge guard (warn only) ----

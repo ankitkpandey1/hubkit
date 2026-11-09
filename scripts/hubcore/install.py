@@ -14,6 +14,7 @@ EVENTS = (
     ("UserPromptSubmit", "", "prompt", 5),
     ("PostToolUse", "AskUserQuestion", "answer", 5),
     ("PostToolUse", "SendMessage|Agent", "routed", 6),
+    ("PostToolUse", "Skill", "skill", 5),
     ("Stop", "", "stop", 5),
 )
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache", ".ruff_cache", ".mypy_cache", "data")

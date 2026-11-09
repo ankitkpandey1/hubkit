@@ -11,8 +11,8 @@ import traceback
 from pathlib import Path
 from typing import TypeGuard
 
-from . import compat, config, gate, lessons, routed, store
-from .orders import Orders, hook_intake
+from . import compat, config, gate, lessons, playbooks, routed, status, store
+from .orders import Orders, _word_re, hook_intake
 from .redact import redact
 from .status import read_status, render_block
 
@@ -103,6 +103,15 @@ def is_hub(cfg: dict, payload: dict) -> bool:
 
 # ---- the hooks ----
 
+RELOAD_MARK = "needs_reload"
+RELOAD_LINE = "hubkit: hub skill not loaded since compaction. NEXT: Skill hub, then read the overlay (hubkit doctor prints its path)"
+
+
+def reload_line(cfg: dict) -> str:
+    """The reload order while the hub skill has not been loaded since the last SessionStart, else empty."""
+    return RELOAD_LINE if (store.state(cfg, create=False) / RELOAD_MARK).exists() else ""
+
+
 def _session_by_id(cfg: dict, session_id: str | None) -> tuple[int | None, dict | None]:
     """The running session file for this session id (the hook payload names it)."""
     for f in config.sessions_dir(cfg).glob("*.json"):
@@ -137,7 +146,9 @@ def hook_session(cfg: dict, payload: dict) -> str:
         if pid is None:
             return ""  # nothing printed, nothing written outside the bound hub
         rebound = f"hubkit: {bind(cfg, pid)}; the old bind was dead (re-bound by the SessionStart hook)\n"
-    store.touch_seen(store.state(cfg), "session")
+    sd = store.state(cfg)
+    store.touch_seen(sd, "session")
+    store.write_atomic(sd / RELOAD_MARK, str(time.time()))
     return rebound + render_block(cfg, Orders(cfg), read_status(cfg))
 
 
@@ -145,7 +156,7 @@ def _words(text: str) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9']+", text.lower()) if len(w) > 2}
 
 
-def correction_line(orders: Orders, sd: Path, text: str, now: float) -> str:
+def correction_line(orders: Orders, sd: Path, text: str, now: float, matched: list[str] | None = None) -> str:
     """Detect a correction (configured phrases, or the same instruction repeated) and inject a record prompt."""
     cfg = orders.intents.get("corrections", {})
     why = ""
@@ -168,9 +179,12 @@ def correction_line(orders: Orders, sd: Path, text: str, now: float) -> str:
     if not why:
         return ""
     quote = redact(text)[0][:200]
+    for name in matched or []:
+        playbooks.add_quote(name, quote)
+    kept = "".join(f"\nhubkit: update playbook {n} if a step was wrong (the quote is added to it)" for n in matched or [])
     return (f'hubkit CORRECTION ({why}): record it this turn. Quote: "{quote}". '
             "Run learn.py add --class <existing-or-new-kebab> --gate <G1..G8> --quote <the words> "
-            "--situation .. --wrong .. --right .. --evidence .. (reuse a class from the block if it is the same mistake).")
+            "--situation .. --wrong .. --right .. --evidence .. (reuse a class from the block if it is the same mistake)." + kept)
 
 
 def unordered_chase_lines(cfg: dict, orders: Orders, text: str, now: float) -> list[str]:
@@ -186,23 +200,63 @@ def unordered_chase_lines(cfg: dict, orders: Orders, text: str, now: float) -> l
     return ["hubkit: no order is live, so this chase is on the job list:", *(slow.block_lines(jobs, now) or ["no live job either: say so plainly"])]
 
 
+PASTED = re.compile(r"(?is)<pasted_content>.*?</pasted_content>")
+DRAFT = re.compile(r"(?i)\bdraft\b")
+DISCARD = re.compile(r"(?i)\b(?:discard|drop|scrap|forget)\b[^.\n]{0,30}\bdraft\b")
+SEND = re.compile(r"\bmep\s+send\b")
+
+
+def draft_items(cfg: dict) -> list[dict]:
+    return [i for i in status.work_load(store.state(cfg)) if i.get("kind") == "active" and i["title"].startswith("draft: ")]
+
+
+def close_drafts(cfg: dict, note: str) -> None:
+    for i in draft_items(cfg):
+        status.work_done(cfg, i["id"], note)
+
+
+def draft_intake(cfg: dict, text: str) -> None:
+    """A typed ask for a draft opens one work item; discarding the draft closes it (`mep send` closes it in the pretool hook)."""
+    if DISCARD.search(text):
+        close_drafts(cfg, "discarded")
+    elif DRAFT.search(text) and not draft_items(cfg):
+        status.work_add(cfg, "active", "draft: " + " ".join(text.split())[:80], note="open until `mep send` or discarded")
+
+
+def no_playbook(cfg: dict, orders: Orders, text: str, before: set[str], pbs: list[dict], now: float) -> list[str]:
+    """When an order opened or the prompt is an imperative statement and no playbook matched: owe a playbook once it is done."""
+    words = orders.intents.get("intake", {}).get("imperative", [])
+    imperative = bool(words) and len(text) <= 300 and not text.rstrip().endswith("?") and bool(_word_re(words).search(text))
+    if pbs or not ({o["id"] for o in orders.live()} - before or imperative):
+        return []
+    cmd = " ".join(text.split())[:60]
+    playbooks.note_missing(cfg, cmd, now)
+    return [f"NO PLAYBOOK for '{cmd}': when done, save the steps with hubkit how save <name> --trigger ... --steps-file ..."]
+
+
 def hook_prompt(cfg: dict, payload: dict) -> str:
     """UserPromptSubmit hook: open, chase, hold or cancel orders from the user's words; inject correction and overdue lines."""
     if not is_hub(cfg, payload):
         return ""
     sd = store.state(cfg)
     store.touch_seen(sd, "prompt")
-    text = payload.get("prompt") or ""
+    text = PASTED.sub(" ", payload.get("prompt") or "")  # words inside pasted content are quoted text, not his order
     origin = (payload.get("origin") or {}).get("kind")
     now = time.time()
+    reload = reload_line(cfg)
     routed.scan_transcript(cfg, payload.get("transcript_path"))  # heard-from before the stall clock is read
     if peer := routed.peer_name(text):  # a peer message that did reach this hook: heard now, opens nothing
         routed.heard(cfg, [(now, peer, text)])
     if not store.is_human(text, origin):
-        return ""
+        return reload
+    draft_intake(cfg, text)
     orders = Orders(cfg)
-    corr = correction_line(orders, sd, text, now)
-    return "\n".join([*routed.prompt_lines(cfg, now), *hook_intake(orders, text), *unordered_chase_lines(cfg, orders, text, now), *([corr] if corr else [])])
+    before = {o["id"] for o in orders.live()}
+    intake = hook_intake(orders, text)
+    pbs = playbooks.match(text)
+    playbooks.note_turn(cfg, [pb["name"] for pb in pbs])
+    corr = correction_line(orders, sd, text, now, [pb["name"] for pb in pbs])
+    return "\n".join([*([reload] if reload else []), *routed.prompt_lines(cfg, now), *intake, *playbooks.inject(pbs), *no_playbook(cfg, orders, text, before, pbs, now), *unordered_chase_lines(cfg, orders, text, now), *([corr] if corr else [])])
 
 
 def _answer_text(resp: object) -> str:
@@ -233,7 +287,8 @@ def hook_routed(cfg: dict, payload: dict) -> str:
     store.touch_seen(store.state(cfg), "routed")
     routed.scan_transcript(cfg, payload.get("transcript_path"))
     ti = payload.get("tool_input") or {}
-    forbids = lessons.brief_forbids_fix(cfg, str(ti.get("message") or ti.get("prompt") or ""))
+    brief = str(ti.get("message") or ti.get("prompt") or "")
+    forbids = "\n".join(w for w in (lessons.brief_forbids_fix(cfg, brief), lessons.release_ban_warning(cfg, brief)) if w)
     item = routed.from_tool(cfg, tool, payload.get("tool_input") or {}, payload.get("tool_response"),
                             str(payload.get("tool_use_id") or ""))
     if not item:
@@ -250,11 +305,23 @@ def hook_routed(cfg: dict, payload: dict) -> str:
     return out + (f"\n{forbids}" if forbids else "")
 
 
+def hook_skill(cfg: dict, payload: dict) -> str:
+    """PostToolUse on Skill: loading the hub skill clears the reload marker."""
+    if not is_hub(cfg, payload) or payload.get("tool_name") != "Skill":
+        return ""
+    store.touch_seen(store.state(cfg), "skill")
+    if (payload.get("tool_input") or {}).get("skill") == "hub":
+        (store.state(cfg) / RELOAD_MARK).unlink(missing_ok=True)
+    return ""
+
+
 def hook_pretool(cfg: dict, payload: dict) -> str:
     """PreToolUse on Bash and TaskStop: warn (never deny) about an unordered merge, an unconfirmed post, a banned command, a stopped agent."""
     tool = str(payload.get("tool_name") or "")
     if not is_hub(cfg, payload) or tool not in ("Bash", "TaskStop", "AskUserQuestion"):
         return ""
+    if tool == "Bash" and SEND.search(str((payload.get("tool_input") or {}).get("command") or "")):
+        close_drafts(cfg, "sent")
     warning = lessons.tool_warning(cfg, tool, payload.get("tool_input") or {})
     if not warning:
         return ""
@@ -279,7 +346,8 @@ def hook_stop(cfg: dict, payload: dict) -> str:
     store.touch_seen(sd, "stop")
     routed.scan_transcript(cfg, payload.get("transcript_path"))
     last = (payload.get("last_assistant_message") or "").strip()
-    reasons = gate.stop_reasons(cfg, last, transcript=payload.get("transcript_path"), cwd=payload.get("cwd"))
+    reasons = [r for r in [reload_line(cfg)] if r]
+    reasons += gate.stop_reasons(cfg, last, transcript=payload.get("transcript_path"), cwd=payload.get("cwd"))
     if not reasons:
         return ""
     store.append_row(sd / "stop-guard.jsonl", {"blocked": True, "reasons": [store.safe(r, 300) for r in reasons]})
@@ -299,7 +367,7 @@ def hook_record(cfg: dict, payload: dict) -> str:
     return ""
 
 
-HOOKS = {"session": hook_session, "prompt": hook_prompt, "stop": hook_stop, "record": hook_record, "answer": hook_answer, "routed": hook_routed, "pretool": hook_pretool}
+HOOKS = {"session": hook_session, "prompt": hook_prompt, "stop": hook_stop, "record": hook_record, "answer": hook_answer, "routed": hook_routed, "pretool": hook_pretool, "skill": hook_skill}
 
 
 def main(event: str) -> int:
