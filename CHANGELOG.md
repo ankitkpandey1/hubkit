@@ -4,6 +4,14 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-11-09
+
+### Added
+- `hubkit how ls|show|save|match`: playbooks (command -> how -> do). Matching steps are injected on a matching prompt; a NO PLAYBOOK flag and a Stop hold until `how save` runs.
+
+### Fixed
+- Text inside `<pasted_content>` is stripped before order, playbook and draft matching, so pasted text opens no order.
+
 ## [0.2.3] - 2026-11-06
 
 ### Fixed
