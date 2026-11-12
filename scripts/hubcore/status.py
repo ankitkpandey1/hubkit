@@ -102,6 +102,9 @@ def work_done(cfg: dict, wid: str, note: str = "") -> str:
             raise KeyError(f"no live item {wid}")
         now = time.time()
         day = store.day_of(cfg, now)
+        from . import roster
+
+        roster.record_job(cfg, hit, note, now)
         store.append_row(sd / "archive" / f"archive_{day}.jsonl",
                          {"type": "work", **hit, "outcome": "done", "done_note": note, "ts": now})
         work_save(sd, [i for i in items if i["id"] != wid])
@@ -239,7 +242,7 @@ def build_status(cfg: dict) -> dict:
     return {
         "version": VERSION, "built": time.time(), "work": work_load(sd),
         "orders": [orders.status_line(o) for o in orders.live()],
-        "mep": mep_state(cfg, (read_status(cfg) or {}).get("mep")), "learnings": recent, "hook_errors": hook_errors(cfg),
+        "mep": mep_state(cfg, (read_status(cfg) or {}).get("mep")), "learnings": recent, "regressed": learnings.regressed(lpath), "hook_errors": hook_errors(cfg),
         "extra": extra, "jobs": job_records(cfg, orders), "watcher": watcher_lines(cfg, orders), "decisions": decisions_tail(cfg),
     }
 
@@ -303,21 +306,32 @@ def render_block(cfg: dict, orders: Orders, st: dict | None, now: float | None =
     if st is None:
         out.append("status: UNVERIFIED (no status.json yet; run `hubkit tick`)")
     else:
+        out += [f"hubkit REGRESSED {c}: the rule did not hold; add a check or rewrite it" for c in st.get("regressed", [])]
         age = int((now - st["built"]) / 60)
         out.append(f"status built {age} min ago" + (f": UNVERIFIED, stale over {STALE_MIN} min" if age > STALE_MIN else ""))
         for kind in ("priority", *(k for k in WORK_KINDS if k != "priority")):
-            if kind == "routed":
-                continue  # listed below with owner, age and last-heard
+            if kind in ("routed", "reply"):
+                continue  # listed below with owner, age and last-heard / PR state
             mine = [i for i in st["work"] if i["kind"] == kind]
             if mine:
                 ahead = ""
                 if kind == "priority" and any(i["kind"] == "active" for i in st["work"]):
                     ahead = " | AHEAD: active work is running while this waits; switch, or say why not"
                 out.append(f"{kind}: " + "; ".join(f"{i['id']} {i['title']} (checked {int((now - float(i.get('verified') or i['added'])) / 60)}m ago)" for i in mine) + ahead)
-        from . import routed, trust
+        from . import replies, routed, trust
 
         out += routed.block_lines(cfg, st["work"], now)
+        out += replies.block_lines(st["work"], now)
+        from . import owed
+
+        out += owed.block_lines(st["work"], now, int(cfg["requests"]["block_lines"]))
+        from . import sweeps
+
+        out += sweeps.block_lines(cfg, st["work"], now)
         out += trust.lines(cfg)
+        from . import roster
+
+        out += roster.block_lines(cfg, now)
         m = st["mep"]
         if m["state"] in ("ok", "stale"):
             out.append(f"on the user (mep): {m['count']}; first: " + " | ".join(m["titles"][:3])
@@ -411,13 +425,17 @@ def evaluate(cfg: dict, orders: Orders, hook_err: dict, now: float) -> list[dict
             found.append({"key": f"{o['id']}:deadline",
                           "msg": f"{o['id']} {o['kind']}: past its deadline {store.clock(cfg, o['deadline'])}"})
     try:
-        from . import inbound, routed, slow, watcher
+        from . import inbound, owed, routed, slow, watcher
 
+        found += owed.alerts(cfg, now)
         found += routed.alerts(cfg, now)
         found += slow.alerts(cfg, orders, now)
         found += watcher.checks(cfg, orders, now)
         found += inbound.alerts(cfg, now)
         found += own_work_alerts(cfg, now)
+        from . import sweeps
+
+        found += sweeps.alerts(cfg, now)
     except Exception as e:  # routed tracking must not break the tick
         found.append({"key": "routed:failed", "msg": f"routed-work check failed: {type(e).__name__}"})
     if hook_err["count"]:
@@ -457,7 +475,9 @@ def tick(cfg: dict, notify: bool = True, now: float | None = None) -> list[dict]
             return []
         orders = Orders(cfg)
         orders.repair_archive()
-        closed = routed_pass(cfg, now)
+        from . import sweeps
+
+        closed = [*sweeps.tick_pass(cfg, orders, now), *routed_pass(cfg, now)]  # standing rules read the PRs before a review item closes
         apath = sd / "alerts.jsonl"
         prior = store.read_rows(apath)[0]
         new = []
@@ -515,6 +535,8 @@ def _watch_loop(cfg: dict, interval: float, max_cycles: int) -> int:
 
 def glance(cfg: dict, day: str) -> list[str]:
     """The day-at-a-glance lines of the end-of-day review."""
+    from . import owed
+
     sd = store.state(cfg)
     orders = Orders(cfg)
     arch = store.read_rows(sd / "archive" / f"archive_{day}.jsonl")[0]
@@ -531,6 +553,7 @@ def glance(cfg: dict, day: str) -> list[str]:
         f"orders opened {m['orders']}, closed {sum(r['outcome'] == 'closed' for r in ao)}, "
         f"cancelled {sum(r['outcome'] == 'cancelled' for r in ao)}, held {len(held)}, still open {len(live)}",
         f"chases {m['chases']} ({m['chases_per_order']} per order)",
+        owed.glance_line(cfg, day),
         f"work items finished {len(aw)}, live now {len(work_load(sd))}",
         f"watchdog alerts {len(alerts)}",
         f"hook errors (scan window) {hook_errors(cfg)['count']}",
@@ -544,7 +567,7 @@ def glance(cfg: dict, day: str) -> list[str]:
 
 
 def digest(cfg: dict, span: str = "12h", now: float | None = None) -> list[str]:
-    """What happened since `span` ago, for a user coming back: work finished, orders closed, alerts, what waits on him."""
+    """What happened since `span` ago, for a user coming back: work finished, orders closed, alerts, what waits on the user."""
     from .lessons import parse_span
 
     now = now or time.time()
@@ -566,6 +589,10 @@ def digest(cfg: dict, span: str = "12h", now: float | None = None) -> list[str]:
     out += [f"  alert: {r.get('msg', '')}" for r in alerts[-5:]]
     out += [f"  waits on you {i['id']}: {i.get('title', '')}" for i in asks] or ["  nothing waits on you"]
     out.append(f"  still live: {len(live) - len(asks)} job(s)")
+    from . import sweeps
+
+    out += sweeps.digest_lines(cfg, now)
+    out.append("  everything open by whose court: hubkit mine")
     from . import ledger
 
     return out + ledger.day_lines(cfg, store.day_of(cfg, since))

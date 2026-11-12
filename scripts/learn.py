@@ -71,7 +71,8 @@ def main() -> int:
                                            max(f.stat().st_mtime for f in ov),
                                            "\n".join(f.read_text(encoding="utf-8", errors="replace") for f in ov), args.check))
         elif args.cmd == "promote":
-            print(learnings.promote(path, learnings.overlay_path(cfg), args.cls, args.gate, args.rule))
+            print(learnings.promote(path, learnings.overlay_path(cfg), args.cls, args.gate, args.rule,
+                                     int(cfg["learn"]["overlay_max_lines"])))
         elif args.cmd == "review":
             for k, v in learnings.review(path, args.day).items():
                 print(f"{k}: {', '.join(v) or '-'}")

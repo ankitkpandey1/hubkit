@@ -7,16 +7,20 @@ description: Optional companion to the hub skill for users of the `mep` (miseenp
 
 `mep` is the user's list, inbox and journal (PyPI package `miseenplace-cli`). The hub reads it and fills its queues. It never edits mep's data files, never writes into the mep data root, and calls only the CLI, with a timeout, as an argument list.
 
-| Hub need | mep verb | Who owns the loop |
-|---|---|---|
-| Watch the user's chat while away | `mep watch --cursor <name>`, run by a background agent; its exit wakes the hub | the inbox-watch skill; the hub picks the cursor name and decides what each line triggers |
-| Classify an inbox line | `mep triage` | the inbox-triage skill |
-| What is on the user, what waits on others | `mep status --json` (also in the hubkit block, labelled UNVERIFIED when mep is slow or absent) | the journal skill; the hub only reads |
-| A decision the user must make | `mep ask --recommend --default --by` | mep owns the queue; the hub fills it with one batched ask |
-| A message to a person | `mep draft`, then `mep send` only on a typed yes (hub gate G3) | the hub's messaging rules (overlay) |
-| Replies to review asks | the review-reply skill named in the overlay | that skill |
-| Daily close | the user's own end-of-day skill for the list; `hubkit eod` for the hub's orders and learnings | both, in that order |
-| Lessons about hub behaviour | `learn.py` today; `mep lessons` is the planned single store (field map: situation->when, right->do, wrong->not, evidence->evidence, seen count->votes) | the hub, until the migration is approved |
+Each step below is a command and the result that means it worked. `mep status --json` and `mep watch` are mep's; check mep's own help for flags.
+
+| Step | Command | Success | Otherwise |
+|---|---|---|---|
+| Is mep there | `command -v mep` | prints a path | nothing: set `[mep] enabled = false` in `~/.config/hubkit/config.toml` and stop using this skill |
+| What is on the user | `mep status --json` | JSON with an `on_you` key | missing key or a timeout: report `UNVERIFIED` or `unreachable`, never "nothing pending" |
+| Same, in the hub's view | `hubkit status --json` | JSON, exit 0, its `mep` entry says `ok` | `stale` or `UNVERIFIED`: re-run `mep status --json` |
+| Watch the user's chat while away | background agent runs `mep watch --cursor <name>` | the agent exits with the line that woke it | exit with no line: re-arm with the same cursor |
+| Classify an inbox line | `mep triage` | one classified item per line (the inbox-triage skill owns it) | |
+| Put a decision to the user | `mep ask --recommend --default --by` | the ask is queued (one batched ask) | |
+| Draft a message to a person | `mep draft` | a draft id | |
+| Send it | the configured send command: the one `tools.send_regex` in `~/.config/hubkit/config.toml` matches (empty means `mep send`); only on the user's typed yes, hub gate G3 | `hubkit inbound ls` no longer lists the ask (hubkit marks it replied when the command names the message id or the person) | still listed: `hubkit inbound replied ID --note "<what was sent>"`, exit 0 |
+| Daily close | the user's own end-of-day skill for the list, then `hubkit eod` | `hubkit eod` prints the review, exit 0 | |
+| Lessons about hub behaviour | `learn.py add ...` today; `mep lessons` is the planned single store (field map: situation->when, right->do, wrong->not, evidence->evidence, seen count->votes) | | |
 
 Rules
 1. Before listing a mep item as pending on the user, re-read it now (hub section 5). Items older than the status build are `UNVERIFIED`.

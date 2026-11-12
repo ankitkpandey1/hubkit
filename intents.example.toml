@@ -29,10 +29,29 @@ verb_max_chars = 120
 # A short prompt matching this while an order is open counts as a chase on that order.
 chase = '(?i)\b(status|eta|done\?|still (not|waiting|running|open)|hold ?up|hurry|where are we|any progress|update\?|why is (it|this|that)|how long)'
 
+[requests]
+# A typed statement that starts with one of these verbs (or holds an [intake] imperative word, in at least min_words words) opens a request.
+verbs = ["delete", "remove", "clean", "update", "add", "create", "check", "send", "push", "close", "rename", "move", "restart", "revert", "write", "open", "reply", "ask", "tell", "find", "list", "set", "enable", "disable", "install", "deploy", "review", "rebase", "sync", "cherry-pick", "investigate", "look", "fix", "tidy"]
+min_words = 4
+# A question-form or "please X" ask opens a request too when its verb (the captured group "verb") is a request verb or an [intake] imperative word ...
+polite_ask = '(?i)^\W*(?:(?:hey|ok|okay|also|and|then|please)\W+)*(?:(?:can|could|would|will)\s+(?:you|u)\s+(?:please\s+)?(?:also\s+)?|(?:pls|please)\s+(?:also\s+)?)(?P<verb>[\w-]+)'
+# ... unless it asks for information: a polite ask starting with one of these opens nothing ("can you tell me why the build failed?").
+info_verbs = ["tell", "explain", "show", "say", "describe", "clarify", "confirm", "remind", "think", "see", "check if"]
+# A short prompt matching this and naming an open request's words counts as a chase on it (default: [intake] chase).
+chase = '(?i)\b(done|finished|yet|still|status|eta|progress|remaining|any update|how long|asked)\b'
+
 [stop_gate]
 # A final message holding one of these words, while an order is open and none has a fix on record, cannot end the turn:
 # a blocker is solved, not reported. Whole words or phrases, case-insensitive.
 blocked_words = ["blocked", "is down", "are down", "failed", "failing", "no host", "cannot reach", "can't reach", "unreachable", "not available", "waiting on", "waiting for", "stuck", "needs a person", "needs his call", "needs her call"]
+# A sentence with a PR ref and one of these phrases says the PR waits on the user's merge; GitHub must agree (no changes
+# requested, no review required, not blocked, behind or conflicting, CI not failing) or the turn is held.
+ready_words = ["ready to merge", "ready for you to merge", "ready for your merge", "ready for merge", "waiting on your merge", "waiting for your merge", "waits for your merge", "awaiting your merge", "needs your merge", "needs your word", "awaiting your word", "waiting on your word", "waits for your word", "for you to merge", "your word to merge", "your call to merge"]
+# A sentence with a PR ref and one of these words, while an open reply item (an ask from a person) names that PR, is held:
+# the person is owed the answer first.
+reply_claim_words = ["merged", "approved", "approves", "reviewed", "lgtm", "review is done", "review done", "closed"]
+# Phrases that count as asking permission in a final message while a no_questions order is open.
+permission_words = ["shall i", "should i", "do you want me to", "waiting for your go", "waiting on your go", "let me know if", "want me to proceed", "want me to"]
 
 [corrections]
 # A human prompt matching one of these regexes (or repeating the previous prompt) makes the prompt
@@ -40,8 +59,12 @@ blocked_words = ["blocked", "is down", "are down", "failed", "failing", "no host
 patterns = ["(?i)\\b(you|u|ur|you're|youre|r u)\\s+(are\\s+|r\\s+)?(so\\s+|really\\s+)?(useless|stupid|dumb|idiot|kidding|sleeping)\\b", "(?i)^\\W*(useless|stupid|dumb|idiot|wtf)\\W*$", "(?i)\\bwtf\\b", "(?i)^\\W*(wrong|no+|nope)[!. ]*$", "(?i)\\bwhy (did|didn't|do|are) (you|u)\\b", "(?i)\\bi (told|asked|said)\\b", "(?i)\\balready (told|said|asked|replied)\\b", "(?i)\\bnot what i (asked|said|meant)\\b"]
 repeat_similarity = 0.6
 repeat_window_min = 30
+# A short typed statement (not a question) matching one of these is a standing rule: the prompt hook says to save it with learn.py.
+rule_patterns = ["(?i)\\bfrom now on\\b", "(?i)\\b(always|never)\\s+(use|do|run|ask|send|check|merge|push|post|reply|give|say|put|add|start|make|write|skip|open|close|show|leave|call|wait|assume|touch|edit|commit|include|link|tell|report|let|stop|take|route|hold)\\b.{0,60}", "(?i)\\bremember (this|that|to)\\b", "(?i)\\bgoing forward\\b", "(?i)\\bsave (this|that|it) to memory\\b"]
+rule_max_chars = 300
 
 [kinds.hotfix]
+no_questions = true          # while open and not held, a final message that asks permission or waits for a go is held
 words = ["hotfix", "hotpatch"]
 first_action_min = 5        # no `order move` within this many minutes -> alert
 stall_min = 10              # no movement for this long -> alert
@@ -50,6 +73,7 @@ done_when = ["pr_merged", "prod_live"]            # evidence names `order close`
 movement_files = []         # globs; a file touched after the order opened counts as movement
 
 [kinds.release]
+no_questions = true
 words = ["release", "app update"]
 first_action_min = 5
 stall_min = 15

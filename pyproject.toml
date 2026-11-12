@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hubkit-cli"
-version = "0.2.4"
+version = "0.4.1"
 description = "Session supervisor for Claude Code: hooks-based multi-agent orchestration with order clocks, routed-work tracking, a watchdog and a stop gate, standard library only."
 readme = "README.md"
 requires-python = ">=3.14"
@@ -25,6 +25,9 @@ hubkit = "hubcore.cli:run"
 [tool.hatch.build.targets.wheel]
 packages = ["scripts/hubcore"]
 sources = ["scripts"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["dist", "dist-*"]
 
 # The wheel also carries the skill tree, so `hubkit skills --install DIR` can lay it down.
 [tool.hatch.build.targets.wheel.force-include]

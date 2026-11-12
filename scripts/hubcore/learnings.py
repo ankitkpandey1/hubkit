@@ -7,7 +7,7 @@ import hashlib
 import re
 import shlex
 import subprocess
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from . import config, store
@@ -171,6 +171,8 @@ def mark_addressed(path: Path, cls: str, day: str, how: str, current: str, rules
             else:  # old entry without a basis: file must be newer than the last sighting's day
                 last = last_seen(block)
                 changed = bool(last) and rules_mtime >= datetime.strptime(last, "%Y-%m-%d").timestamp()
+            if field(block, "ineffective") and (not check or check == "none"):
+                raise ValueError(f"refused: {cls} was addressed before and regressed; a prose-only rule already failed once. Give --check <command> that fails while the rule is broken")
             if f"[{cls}]" not in rule_text:
                 raise ValueError(f"refused: no rule line tagged [{cls}] in the overlay or SKILL.md; run learn.py promote first")
             if not changed:
@@ -197,7 +199,27 @@ EXPIRE_DAYS = 90  # an addressed class not seen for this long is a candidate to 
 OVERLAY_CAP = 200  # the overlay is read in full at every session start: past this a rule is retired or merged first
 
 
-def promote(path: Path, overlay: Path, cls: str, gate: str, rule: str) -> str:
+def merge_candidates(path: Path, rules: list[str], day: str, n: int = 3) -> list[str]:
+    """Overlay rule lines to merge or drop first: those of expired and prose-only classes, then the oldest rules."""
+    review_ = review(path, day)
+    flagged = {c.split(" ")[0] for k in ("expire", "prose-only") for c in review_[k]}
+    tagged = [ln for ln in rules if re.search(r"\[[a-z0-9-]+\]\s*$", ln)]
+    out = [f"{ln}  (expired or prose-only)" for ln in tagged if re.search(r"\[([a-z0-9-]+)\]\s*$", ln)[1] in flagged]  # type: ignore[index]
+    out += [f"{ln}  (oldest)" for ln in tagged[:n] if not any(ln in o for o in out)]
+    return out
+
+
+def regressed(path: Path) -> list[str]:
+    """Classes addressed and seen again since: the rule did not hold."""
+    out = []
+    for b in read_blocks(path)[1]:
+        addr = addressed(b)
+        if addr and [d for d in seen_dates(b) if d > addr[0]]:
+            out.append(block_class(b))
+    return out
+
+
+def promote(path: Path, overlay: Path, cls: str, gate: str, rule: str, cap: int = OVERLAY_CAP) -> str:
     """Write one short rule line into the overlay under its gate heading. User data stays out of SKILL.md."""
     _, blocks = read_blocks(path)
     if not any(block_class(b) == cls for b in blocks):
@@ -221,9 +243,12 @@ def promote(path: Path, overlay: Path, cls: str, gate: str, rule: str) -> str:
         stop = next((i for i in range(at + 1, len(lines)) if lines[i].startswith("#")), len(lines))
         while stop > at + 1 and not lines[stop - 1].strip():
             stop -= 1
+        before = len(lines)
         lines.insert(stop, line)
-        if len(lines) > OVERLAY_CAP:
-            raise ValueError(f"refused: the overlay would have {len(lines)} lines, over its cap of {OVERLAY_CAP}. Retire or merge an older rule first")
+        if before >= cap or len(lines) > cap:
+            todo = merge_candidates(path, lines, date.today().isoformat())
+            raise ValueError(f"refused: the overlay would have {len(lines)} lines, over its cap of {cap}. Merge or drop an older rule first"
+                             + ("; candidates:\n" + "\n".join(todo) if todo else ""))
         store.write_atomic(overlay, "\n".join(lines) + "\n")
     return f"promoted: {cls} -> {gate}"
 

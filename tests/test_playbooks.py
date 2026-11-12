@@ -1,7 +1,5 @@
 """Playbooks: how a recurring command is done, replayed on a matching prompt, owed when missing, corrected on a correction."""
 
-import json
-
 from test_hubkit import HOTFIX, stop
 
 STEPS = "1. open the release PRs\n2. have the reviewer review them\n3. merge with --match-head-commit\n"

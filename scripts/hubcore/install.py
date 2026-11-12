@@ -57,7 +57,7 @@ def hooks_block(skills_dir: str, merge_guard: bool = False) -> str:
     """The `hooks` JSON for settings.json: each hook runs the hub skill's script, and says so if the script is missing."""
     script = f"{skills_dir.rstrip('/')}/hub/scripts/hubkit"
     hooks: dict[str, list[dict]] = {}
-    events = [*EVENTS, *((("PreToolUse", "Bash|TaskStop|AskUserQuestion", "pretool", 5),) if merge_guard else ())]
+    events = [*EVENTS, *((("PreToolUse", "Bash|TaskStop|AskUserQuestion|CronCreate|ScheduleWakeup|Edit|Write|NotebookEdit", "pretool", 5),) if merge_guard else ())]
     for event, matcher, name, timeout in events:
         cmd = f'[ -f "{script}" ] || echo "hubkit: script missing at {script}"; python3 "{script}" hook {name}'
         group: dict = {"hooks": [{"type": "command", "command": cmd, "timeout": timeout}]}

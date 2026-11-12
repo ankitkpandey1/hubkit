@@ -51,7 +51,7 @@ def load_all() -> list[dict]:
 def get(name: str) -> dict:
     path = pdir() / f"{name}.md"
     if not path.exists():
-        raise ValueError(f"no playbook {name}; see: hubkit how ls")
+        raise KeyError(f"no playbook {name}; see: hubkit how ls")
     return _parse(path)
 
 

@@ -38,6 +38,10 @@ class StateError(RuntimeError):
     pass
 
 
+class Refused(ValueError):
+    """A valid request hubkit will not carry out (missing evidence, a state that forbids it): exit code 3."""
+
+
 def _normalise(text: str) -> str:
     """NFKC, all dash look-alikes to '-', zero-width and format characters removed, lower case."""
     out = []

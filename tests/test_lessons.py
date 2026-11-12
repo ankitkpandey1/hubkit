@@ -44,11 +44,11 @@ def test_a_done_turn_with_an_unread_newer_prompt_is_blocked_until_asks_ls_runs(e
     env.bind()
     prompts(env, "do three things: fix the log, tidy the docs, and reply to the thread")
     blocked = stop(env, last_assistant_message="All done, shipped.")
-    assert "have not re-read his words" in blocked["reason"] and "hubkit asks ls" in blocked["reason"]
+    assert "have not re-read the user's words" in blocked["reason"] and "hubkit asks ls" in blocked["reason"]
     env.run("asks", "ls")
     assert stop(env, last_assistant_message="All done, shipped.") is None
     prompts(env, "one more thing: also bump the version")
-    assert "have not re-read his words" in stop(env, last_assistant_message="Finished.")["reason"]
+    assert "have not re-read the user's words" in stop(env, last_assistant_message="Finished.")["reason"]
 
 
 def test_a_turn_that_does_not_say_done_is_not_held_for_the_asks(env):
@@ -209,7 +209,7 @@ def test_a_status_line_that_uses_the_word_done_is_not_a_done_claim(env):
                   "Step 2 finished. Starting step 3."):
         assert stop(env, last_assistant_message=plain) is None, plain
     for claim in ("Everything is done.", "I'm done.", "All set, nothing left."):
-        assert "have not re-read his words" in stop(env, last_assistant_message=claim)["reason"], claim
+        assert "have not re-read the user's words" in stop(env, last_assistant_message=claim)["reason"], claim
 
 
 def test_a_machine_named_release_server_opens_no_order_and_an_insult_at_a_tool_is_no_correction(env):
@@ -228,7 +228,7 @@ def test_a_list_of_items_pending_on_the_user_with_no_lookup_is_held(env):
     env.bind()
     msg = "Three items are pending on you: the merge, the draft and the invoice."
     held = stop(env, last_assistant_message=msg, transcript_path=transcript(env, []))
-    assert "pending on him" in held["reason"] and "read nothing" in held["reason"]
+    assert "pending on the user" in held["reason"] and "read nothing" in held["reason"]
     assert stop(env, last_assistant_message=msg, transcript_path=transcript(env, ["Bash"])) is None
     assert stop(env, last_assistant_message="Nothing is pending on you.", transcript_path=transcript(env, [])) is None
 

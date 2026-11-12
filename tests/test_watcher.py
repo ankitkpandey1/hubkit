@@ -176,7 +176,7 @@ def test_a_job_blocked_on_another_does_not_alarm_until_the_link_is_cleared(env):
     send(env, "peer-a", f"fix {PR1}")
     send(env, "peer-b", f"review {PR2}")
     age_routed(env, 20)
-    assert env.run("work", "block", "W2", "--on", "W9").returncode == 2  # no such job
+    assert env.run("work", "block", "W2", "--on", "W9").returncode == 4  # no such job
     assert env.run("work", "block", "W2", "--on", "W1").returncode == 0
     reason = stop(env)["reason"]
     assert "peer-a" in reason and "peer-b" not in reason

@@ -50,3 +50,31 @@ def test_review_lists_prose_only_and_expired_rules(env):
     out = env.learn("review", "--day", "2026-06-01").stdout
     assert "expire: old-prose (addressed 2026-01-01, not seen since)" in out and "prose-only: old-prose" in out
     assert "expire: -" in env.learn("review", "--day", "2026-02-01").stdout
+
+
+def test_promote_at_the_cap_lists_what_to_merge_first_and_the_cap_is_config(env):
+    ov = env.root / "overlay.md"
+    env.cfg.write_text(env.cfg.read_text() + "[learn]\noverlay_max_lines = 42\n")
+    assert addressed(env, "prose-one").returncode == 0  # addressed with no check: a prose-only rule
+    ov.write_text(ov.read_text() + "".join(f"- rule {n}\n" for n in range(40)))
+    env.learn("add", "--class", "cap-two", "--gate", "G1", "--quote", "q", "--situation", "s", "--wrong", "w", "--right", "r", "--evidence", "e")
+    before = ov.read_text()
+    r = env.learn("promote", "cap-two", "--gate", "G1", "--rule", "A new rule.")
+    assert r.returncode == 2 and "over its cap of 42" in r.stderr and "candidates:" in r.stderr
+    assert "- rule for prose-one [prose-one]  (expired or prose-only)" in r.stderr and ov.read_text() == before
+    assert "overlay: " in env.run("doctor").stdout and "lines of 42" in env.run("doctor").stdout
+
+
+def test_a_regressed_class_leads_the_status_block_and_cannot_be_readdressed_without_a_check(env):
+    env.bind()
+    assert addressed(env, "reg-one", check="true").returncode == 0
+    today = time.strftime("%Y-%m-%d", time.gmtime(time.time() + 86400))
+    env.learn("add", "--class", "reg-one", "--gate", "G1", "--quote", "again", "--date", today)
+    env.run("tick", "--no-notify")
+    out = env.hook("session", {"session_id": "sess-hub", "source": "compact"}).stdout
+    assert "hubkit REGRESSED reg-one: the rule did not hold; add a check or rewrite it" in out
+    assert out.index("REGRESSED") < out.index("open orders")
+    r = env.learn("address", "--class", "reg-one", "--how", "reworded", "--date", today)
+    assert r.returncode == 2 and "regressed" in r.stderr and "--check" in r.stderr
+    env.learn("promote", "reg-one", "--gate", "G1", "--rule", "A harder rule for reg-one.")
+    assert env.learn("address", "--class", "reg-one", "--how", "reworded", "--date", today, "--check", "true").returncode == 0

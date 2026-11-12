@@ -11,11 +11,12 @@ import tomllib
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import config, store
+from . import config, lifecycle, store
 
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 PR_REF = re.compile(r"(?i)https://github\.com/[\w.-]+/[\w.-]+/pull/\d+|\bpr\s*#?\d+|#\d{2,}")
-LIVE_STATES = ("open", "unconfirmed", "held")
+LIVE_STATES = lifecycle.live_states("order")
+DEAD_STATES = lifecycle.terminal_states("order")
 
 
 def load_intents(cfg: dict) -> dict:
@@ -84,7 +85,7 @@ def fold(rows: list[dict]) -> dict[str, dict]:
             )
             continue
         o = out.get(oid)
-        if o is None or o["state"] in ("closed", "cancelled", "expired"):
+        if o is None or o["state"] in DEAD_STATES:
             continue
         if op == "confirm" and o["state"] == "unconfirmed":
             o["state"] = "open"
@@ -134,6 +135,12 @@ class Orders:
         """Orders that are open, unconfirmed or held."""
         return [o for o in self.all().values() if o["state"] in LIVE_STATES]
 
+    def _check(self, oid: str, verb: str, **given) -> None:
+        """Ask the lifecycle table about a verb on an order that exists (an unknown id keeps its old behaviour)."""
+        o = self.all().get(oid)
+        if o is not None:
+            lifecycle.check("order", o["state"], verb, **given)
+
     def _append(self, oid: str, op: str, **kw) -> None:
         store.append_row(self.path, {"id": oid, "op": op, **kw})
 
@@ -162,6 +169,7 @@ class Orders:
 
     def confirm(self, oid: str) -> None:
         """Turn an unconfirmed order into an open one."""
+        self._check(oid, "confirm")
         self._append(oid, "confirm")
 
     def move(self, oid: str, note: str, estimate: int | None = None) -> str:
@@ -245,10 +253,12 @@ class Orders:
 
     def hold(self, oid: str, quote: str) -> None:
         """Hold an order, quoting the user's explicit words."""
+        self._check(oid, "hold", quote=quote)
         self._append(oid, "hold", quote=quote)
 
     def resume(self, oid: str) -> None:
         """Resume a held order and restart its clock."""
+        self._check(oid, "resume")
         self._append(oid, "resume")
 
     def cancel(self, oid: str, quote: str) -> None:
@@ -258,9 +268,10 @@ class Orders:
         with store.locked(self.sd / "lock"):
             o = self.get(oid)
             if o["state"] == "closed":
-                raise ValueError(f"{oid} is already closed")
+                raise store.Refused(f"{oid} is already closed")
             if o["state"] in ("cancelled", "expired"):
                 return
+            lifecycle.check("order", o["state"], "cancel", quote=quote)
             self._append(oid, "cancel", quote=quote)  # the order row first; the archive row is repairable
             self._die_after("cancel")
             self._archive(self.get(oid), "cancelled", {"quote": store.safe(quote, 300)})
@@ -270,6 +281,7 @@ class Orders:
         with store.locked(self.sd / "lock"):
             o = self.get(oid)
             if o["state"] in LIVE_STATES:
+                lifecycle.check("order", o["state"], "expire", note=why)
                 self._append(oid, "expire", note=why)
                 self._archive(self.get(oid), "expired", {"note": why})
 
@@ -323,12 +335,13 @@ class Orders:
             if o["state"] == "closed":
                 return f"{oid} already closed"
             if o["state"] in ("cancelled", "expired"):
-                raise ValueError(f"{oid} was {o['state']}")
+                raise store.Refused(f"{oid} was {o['state']}")
             if o["state"] == "unconfirmed":
-                raise ValueError(f"{oid} is unconfirmed; run 'order confirm {oid}' first")
+                raise store.Refused(f"{oid} is unconfirmed; run 'order confirm {oid}' first")
+            lifecycle.check("order", o["state"], "close", evidence=evidence)
             problems = self.check_evidence(o, evidence)
             if problems:
-                raise ValueError("close refused: " + "; ".join(problems))
+                raise store.Refused("close refused: " + "; ".join(problems))
             self._append(oid, "close", evidence=evidence)  # source of truth first
             self._die_after("close")
             self._archive(self.get(oid), "closed", {"evidence": evidence})

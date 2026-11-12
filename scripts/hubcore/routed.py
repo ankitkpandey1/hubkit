@@ -20,7 +20,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import store
+from . import lifecycle, store
 from .orders import PR_REF, PR_URL, load_intents
 from .status import next_work_id, work_load, work_save
 
@@ -395,28 +395,64 @@ def _epoch(iso: str) -> float:
     return datetime.fromisoformat(iso).timestamp()
 
 
-def pr_info(cfg: dict, url: str, timeout: float) -> dict | None:
-    """Head sha, PR author and every review, from gh; None (unknown) on any failure."""
+# The one list of fields read from gh for a PR.
+PR_FIELDS = "headRefOid,reviews,author,commits,state,statusCheckRollup,reviewDecision,mergeStateStatus,reviewRequests,mergedAt,closedAt"
+
+
+def court(info: dict | None) -> str:
+    """Whose court a PR is in, from a pr_info dict (pure): 'done' (merged or closed), 'ci' (checks failing or running),
+    'author' (changes requested, or the branch is behind or conflicts), 'reviewer:<login>' (a review is still required;
+    the first requested reviewer, else 'any'), 'user' (nothing blocks the merge) or 'unknown' (unreadable, or blocked
+    for a reason gh does not name)."""
+    if not info or "head" not in info:
+        return "unknown"
+    if info.get("state") in ("MERGED", "CLOSED"):
+        return "done"
+    decision, merge = info.get("decision", ""), info.get("merge_state", "")
+    if info.get("ci") == "failing":
+        return "ci"
+    if decision == "CHANGES_REQUESTED" or merge in ("DIRTY", "BEHIND"):
+        return "author"
+    if decision == "REVIEW_REQUIRED":
+        return "reviewer:" + (next(iter(info.get("requested") or []), "") or "any")
+    if info.get("ci") == "pending":
+        return "ci"
+    if merge == "BLOCKED":
+        return f"reviewer:{info['requested'][0]}" if info.get("requested") else "unknown"
+    return "user"
+
+
+_VIEWS: dict[str, tuple[float, dict]] = {}
+VIEW_TTL_S = 5.0
+
+
+def gh_view(cfg: dict, url: str, timeout: float) -> dict | None:
+    """The raw `gh pr view` JSON of one PR, or None on any failure. A good read is reused inside this process for
+    a few seconds, so one hook that checks a PR twice reads GitHub once."""
     exe = _gh(cfg)
     if exe is None or timeout <= 0 or not url.startswith("http"):
         return None
+    hit = _VIEWS.get(url)
+    if hit and time.time() - hit[0] < VIEW_TTL_S:
+        return hit[1]
     try:
-        r = subprocess.run(
-            [
-                exe,
-                "pr",
-                "view",
-                url,
-                "--json",
-                "headRefOid,reviews,author,commits,state,statusCheckRollup",
-            ],
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            check=False,
-        )
+        r = subprocess.run([exe, "pr", "view", url, "--json", PR_FIELDS],
+                           capture_output=True, encoding="utf-8", errors="replace", timeout=timeout, check=False)
         data = json.loads(r.stdout)
+    except OSError, subprocess.SubprocessError, ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    _VIEWS[url] = (time.time(), data)
+    return data
+
+
+def pr_info(cfg: dict, url: str, timeout: float) -> dict | None:
+    """Head sha, PR author and every review, from gh; None (unknown) on any failure."""
+    data = gh_view(cfg, url, timeout)
+    if data is None:
+        return None
+    try:
         revs: list[dict] = [
             {
                 "at": _epoch(x["submittedAt"]),
@@ -436,6 +472,9 @@ def pr_info(cfg: dict, url: str, timeout: float) -> dict | None:
             "head_author": _last_author(data.get("commits")),
             "state": str(data.get("state") or "").upper(),
             "ci": ci_state(data.get("statusCheckRollup")),
+            "decision": str(data.get("reviewDecision") or "").upper(),
+            "merge_state": str(data.get("mergeStateStatus") or "").upper(),
+            "requested": [n for x in data.get("reviewRequests") or [] if isinstance(x, dict) and (n := str(x.get("login") or x.get("slug") or x.get("name") or ""))],
         }
     except OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError:
         return None
@@ -540,6 +579,7 @@ def _chase(cfg: dict, item: dict, text: str, heads: dict[str, str], now: float) 
     """A follow-up to the owner about work already on the item: counted, never a new clock. It answers a moved head
     or an old-head verdict (the hub acted), so those flags clear and the new head becomes the baseline.
     """
+    lifecycle.check("routed", lifecycle.state_of("routed", item), "chase")
     _event(item, "chase", text, now)
     item["chases"] = int(item.get("chases", 0)) + 1
     item["addressed"] = [*item.get("addressed", []), now]
@@ -618,6 +658,7 @@ def record(
                 "events": [],
                 "chases": 0,
             }
+            lifecycle.check("routed", lifecycle.NEW, "route")
             all_.append(hit)
         moved: list[dict] = []
         if is_new:
@@ -926,7 +967,9 @@ def prompt_lines(cfg: dict, now: float) -> list[str]:
         out.append(
             f"hubkit {tag}: {owner}: {facts}. NEXT: {next_action(cfg, its[0], now)}"
         )
-    return out
+    from . import reviewreport
+
+    return [*out, *reviewreport.prompt_lines(items(cfg))]
 
 
 def slow_why(cfg: dict, item: dict, now: float) -> str:
@@ -962,7 +1005,9 @@ def alerts(cfg: dict, now: float) -> list[dict]:
                     ),
                 }
             )
-    return out
+    from . import reviewreport
+
+    return [*out, *reviewreport.alerts(items(cfg))]
 
 
 def block_lines(cfg: dict, work: list[dict], now: float) -> list[str]:
@@ -998,6 +1043,12 @@ def heard(cfg: dict, events: list[tuple[float, str, str]]) -> int:
     if not events:
         return 0
     _note_peers(cfg, events)
+    try:
+        from . import roster
+
+        roster.learn(cfg, events)  # the peers' own words set their role and free/busy state
+    except OSError, ValueError, KeyError, TypeError:
+        pass
     sd = store.state(cfg)
     n = 0
     with store.locked(sd / "work.lock"):
@@ -1034,6 +1085,17 @@ def heard(cfg: dict, events: list[tuple[float, str, str]]) -> int:
                     )
                     i["claimed"] = text[:160]
                     n += 1  # a change to save even when no last_heard moved
+                if (
+                    from_owner
+                    and i.get("review")
+                    and ts > (i.get("routed_at") or i["added"])
+                    and is_report(text)
+                    and _report_is_about(all_, i, text)
+                ):
+                    from . import reviewreport
+
+                    reviewreport.check(cfg, i, text, ts)  # warn-level: the steps the role requires
+                    n += 1
                 if (name.lower() == i["owner"].lower() or by_text) and ts > (
                     i.get("last_heard") or 0
                 ):
@@ -1169,6 +1231,11 @@ def transcript_of(cfg: dict, session_id: str) -> str | None:
 
 
 def _archive(cfg: dict, item: dict, note: str, now: float) -> None:
+    from . import roster
+
+    if item.get("kind") == "routed":
+        lifecycle.check("routed", lifecycle.state_of("routed", item), "close", note=note)
+    roster.record_job(cfg, item, note, now)
     day = store.day_of(cfg, now)
     store.append_row(
         store.state(cfg) / "archive" / f"archive_{day}.jsonl",
@@ -1292,7 +1359,7 @@ def next_step(cfg: dict, d: dict, owner: str) -> str:
     if state == "APPROVED":
         if ci in ("failing", "pending"):
             return f"approved at {sha} but CI is {ci}: have {owner} fix or wait for CI before any merge; do not merge on red"
-        return f"approved at {sha}, CI {ci}: if the user ordered a merge, merge with --match-head-commit {sha}; otherwise report the approval and wait for his word"
+        return f"approved at {sha}, CI {ci}: if the user ordered a merge, merge with --match-head-commit {sha}; otherwise report the approval and wait for the user's word"
     if state == "CHANGES_REQUESTED":
         return f"changes requested: send {owner} the findings with the PR's comment links and ask for a push; chase it as a new item"
     return f"read the review at {sha}, then send {owner} the next step or report the verdict"
@@ -1372,11 +1439,14 @@ def refresh_prs(cfg: dict, now: float) -> list[dict]:
     closes it. Returns the alerts for items closed here."""
     sd = store.state(cfg)
     resolve_bare_refs(cfg)
-    todo = {u for i in items(cfg) for u in i["prs"]}
+    from . import replies
+
+    todo = {u for i in items(cfg) for u in i["prs"]} | replies.pr_urls(cfg)
     if not todo:
         return []
     timeout = float(opts(cfg)["gh_timeout_s"])
     got = {u: pr_info(cfg, u, timeout) for u in sorted(todo)}
+    replies.note_states(cfg, got, now)
     msgs: list[dict] = []
     with store.locked(sd / "work.lock"):
         all_ = work_load(sd)

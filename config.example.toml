@@ -22,6 +22,9 @@ name = "hub"                  # names the hub in the status block; also the sess
 [tools]
 mep = "mep"                   # path or name of the miseenplace CLI
 notify_cmd = "notify-send -u critical -a hubkit"   # watchdog alerts: this command + message; "" = off
+send_regex = ""               # regex of your chat-send command in a Bash call; a match closes drafts and marks asks to the person it names as replied. "" = `mep send`
+draft_regex = ""              # regex of a typed ask for a draft (opens a "draft: " work item). "" = the word "draft"
+discard_regex = ""            # regex of a typed discard of the draft (closes it). "" = discard/drop/scrap/forget ... draft
 
 [mep]
 # The optional `mep` task-list CLI. Set enabled = false if you do not use it.
@@ -50,6 +53,22 @@ terms = []
 #   overlay.md     - free text rules that are yours: people, channels, accounts, repos, boxes.
 # Hooks (add to ~/.claude/settings.json; see the README "Hook setup"). Every key: docs/configuration.md.
 
+[requests]
+# The user's plain asks ("delete the stale branches") are tracked until `hubkit req done`. Words are in intents.toml [requests].
+stall_min = 60         # a done-claim while a request is older than this with no note is blocked (until enough requests were finished)
+overdue_min = 120      # a request open longer than this alerts (until enough requests were finished)
+floor_min = 10         # the learned stall limit is never under this; the learned overdue limit never under twice this
+overdue_factor = 2.0   # learned overdue limit = this times the median time-to-done of finished requests ([slow] min_samples of them)
+similarity = 0.6       # word overlap that makes a new ask a repeat (a chase) of an open request
+max_open = 20          # at most this many open requests
+title_chars = 120      # characters of the user's words kept as the title
+block_lines = 5        # open requests listed in the status block
+text_chars = 600       # characters of the full prompt kept on the request (the title keeps title_chars)
+max_parts = 8          # a list of asks with more items than this stays one request with no parts
+false_min = 3          # a verb with this many false intakes (req drop --not-a-request) in the window ...
+false_ratio = 0.5      # ... and at least this share of its opens stops opening requests (req relearn VERB restores it)
+window_days = 14       # the window for the two keys above
+
 [slow]
 # Estimates and the slowness check (hub-internal). See docs/architecture.md.
 min_samples = 3        # archived samples needed before the usual time replaces the stall limit
@@ -65,6 +84,9 @@ waiting_min = 3       # a peer waiting on a prompt this long = alert
 active_s = 120        # a busy holder whose transcript grew this recently is working
 watch_grace_min = 5   # live work with no watch running this long = alert
 notify_user = true    # platform default desktop notification for hub/peer alerts when notify_cmd is empty
+reply_owed_min = 60    # an ask from a person unanswered this long = alert (the ceiling once a person has a learned median)
+reply_floor_min = 10  # the learned per-person limit never goes below this
+reply_min_samples = 3 # replies to a person needed before their own median replaces reply_owed_min
 
 [routed]
 # repo_aliases = { fe = "owner/other-repo" }   # "fe 123" / "fe#123" name a PR in that repo, not the default one
@@ -82,3 +104,86 @@ repo = "owner/name"       # bare #N resolves against this
 owner_logins = {}         # owner name -> GitHub login, for peers who author PRs
 reviewer_logins = []      # empty = any non-author review counts
 skip_briefs = ["mep watch", "inbox watch"]  # standing watchers are never routed work
+done_when_markers = ["Done-when:", "Done when:"]  # a brief line that declares what shows a no-PR job is done
+require_done_when = "warn"  # "warn": a non-review brief with no PR and no such line gets a warning; "off"
+
+[threads]
+min_shared = 2            # key words a brief must share with an open ask to link under it
+root_share = 0.5          # ... and that share of the ask's own key words
+
+[report]
+zone_check = true             # hold a final message that states a time in UTC while user.timezone is another zone
+utc_markers = ["UTC", "GMT"]
+max_lines = 15                # warn (never hold) when a final message has more non-blank lines; 0 = off
+max_code_lines = 12           # warn when a fenced code block is longer; 0 = off
+eod_time = ""                 # "HH:MM" in user.timezone: after it the tick writes the end-of-day review once; "" = off
+eod_check_min = 30            # alert when there is still no eod file this long after eod_time (or at once if writing it failed)
+
+[gate]
+# A Stop-gate check that the user marks a false alarm (hubkit gate false-alarm ID --why ..) this often, and this large a share
+# of its fires in the window, downgrades itself from hold to a next-prompt WARNING. A correction soon after restores it.
+false_alarm_min = 3
+false_alarm_ratio = 0.3
+window_days = 14
+restore_window_min = 30
+never_downgrade = ["verdict", "ci", "merge-state"]   # checks against relaying false verdicts: never downgrade themselves
+
+[learn]
+overlay_max_lines = 200       # learn.py promote is refused at or over this many overlay lines
+
+[guards]
+# Warn-only pre-tool checks for work nobody asked for. A ticket-creating command is warned unless a recent typed prompt asks for it:
+# needs_order = ["jira\\s+create", "gh\\s+issue\\s+create"]
+needs_order = []
+needs_order_words = ["ticket", "issue", "jira", "file a", "open a", "create a"]
+schedule_tools = ["CronCreate", "ScheduleWakeup"]
+schedule_words = ["schedule", "loop", "watch", "every", "remind", "cron", "poll", "recurring", "keep an eye", "check again"]
+window_min = 60
+# The hub coordinates; an Edit/Write/NotebookEdit it makes itself outside these paths is warned once per turn.
+# Its own state and config dirs and the temp dir are always allowed. "off" silences the check.
+inline_edits = "warn"
+inline_ok_paths = ["/tmp/*", "*.md"]   # globs on the full path
+# Hosts that hold one agent at a time: a second owner briefed on a host already in use is warned.
+hosts = []                    # for example ["host-a", "host-b"]
+review_ask_window_min = 240   # a review brief on a PR nobody (order, reply, request, typed word in this window) named is warned
+
+# Posts from the wrong account: a command matching `match` without `require` is warned, and `hint` is the NEXT action.
+# [[accounts.rules]]
+# match = "\\bmep\\s+send\\b"
+# require = "--as\\s+me"
+# hint = "add --as me to send from the user's own account"
+
+[roster]
+# The peer roster is learned from the peers' own messages; these words say what a message means.
+stale_min = 120               # a free/busy state learned longer ago than this is shown as stale and not trusted
+correction_window_min = 10    # the user's correction this soon after a brief to a role is counted against that role
+reviewer_words = ["reviewer", "code-review only", "code review only", "review only"]
+worker_words = ["worker", "no role assigned"]
+busy_words = ["busy", "not free", "not available", "occupied"]
+free_words = ["idle", "free worker", "i'm free", "i am free", "free for", "ready for work", "ready for the next"]
+
+# Lines a brief to a role must include (phrases or regexes). Empty by default.
+# [roles.reviewer]
+# brief_must_include = ["code-review skill"]
+# report_must_include = ["checked the diff", "ran the tests"]   # steps a review report must show; a report lacking one is flagged
+
+[standing]
+# Standing rules (hubkit standing add/ls/drop): what fires when the user's saved instruction applies.
+approved_cmd = "gh pr merge {pr} --squash --match-head-commit {sha}"   # NEXT for an approved rule whose action says merge; {pr} {sha} {repo}
+estimate_min = 10             # the work item a rule opens (when its action names no order kind) is expected to take this long
+gh_timeout_s = 10
+max_reads = 20                # tracked PRs read per tick for approved rules
+
+[review_debt]
+# PRs where the user's review was asked again and the head moved since they last reviewed (read only, no orders).
+enabled = "auto"              # "auto" = on when user.github_login is set; true / false force it
+every_min = 30                # the sweep runs at most this often
+gh_timeout_s = 15
+max_prs = 30                  # review-requested PRs fetched by one search
+max_reads = 10                # PRs read per sweep
+
+[stale]
+# Open items whose PR is merged or closed are marked "probably stale" in `hubkit mine` and the digest (warn only).
+enabled = true
+max_reads = 8                 # gh reads per run
+gh_timeout_s = 5

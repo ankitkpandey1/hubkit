@@ -8,6 +8,25 @@
 
 hubkit adapts to you. When you correct the hub ("I told you to wait for the review"), a hook notices, the hub records the correction as a class of mistake, and a class that repeats is promoted to a written rule in your own overlay file. A rule only counts as fixed after a check that the rule really exists, and it stays on probation until it has held. The words that open an urgent order, the clocks, what "done" means and every other setting live in your config files, not in the code, so the kit bends to how you work. This is a log-and-verify loop around the hub model, not machine learning: hubkit detects, stores and checks; the hub session writes the entries and rules.
 
+## For agents
+
+hubkit keeps a record outside the model's memory (orders with clocks, requests, routed work, replies owed) and holds a Claude Code hub session to it. You drive it with the CLI below; every read verb has a `--json` form and every error says what to run next.
+
+- Install: `uv tool install hubkit-cli`, then `hubkit skills --install ~/.claude/skills`, then follow the `hubkit-setup` skill (it runs unattended and asks only for what it cannot find).
+- Verify: `hubkit doctor`. Success is exit 0 with `bind: live <name>`, `hook-errors.jsonl: 0 rows` and `secret-shaped strings in state (count only): 0` (on a fresh install, before binding, `bind: none or dead` is also fine). `hubkit doctor --json` returns `{"ok", "exit", "lines"}`.
+
+The five commands to know first:
+
+```bash
+hubkit next                # the one most urgent action now and its exact NEXT command; "nothing is due" when nothing is
+hubkit mine                # everything open, grouped by whose court it is in (the user, the hub, peers, other people)
+hubkit status --json       # the full status document (orders, work, alerts, mep, hook errors)
+hubkit order ls --json     # {"orders": [...]}: every live order with its clock fields
+hubkit doctor              # config, bind, hook heartbeats, state health; exit 1 on a problem
+```
+
+`--json` prints one JSON document on stdout and nothing else. Exit codes: 0 ok, 2 bad usage, 3 refused (missing evidence, the state forbids it), 4 not found. Every error prints `error: ...` and a last line `NEXT: <exact command>`; with `--json` it also prints `{"error", "next", "code"}` on stdout. Every verb, whether it reads or writes, and whether it has `--json`: [docs/commands.md](docs/commands.md#verb-table). Machine-readable index: [llms.txt](llms.txt).
+
 ## Why use a Claude Code session supervisor
 
 A coordinating Claude Code session routes work to peers and background agents, then forgets. After a context compaction it no longer knows which order was urgent, who was asked to review what, or whether "done" was ever proven. hubkit keeps that record outside the model's memory, gives every order a clock and an evidence check, watches routed work for silence, and blocks the hub from ending a turn while it owes something. Example session:
@@ -29,10 +48,14 @@ In a live hub, the prompt hook opens that order itself from your sentence, and t
 
 - **Learns from corrections.** A prompt hook flags correction phrases and repeated instructions. `scripts/learn.py` records, promotes and verifies them. See [docs/architecture.md](docs/architecture.md#the-learn-loop).
 - **Order clock.** Orders open from your own prompts (never from peer or harness text), each with a first-action limit, a stall limit and a definition of done checked by evidence on close.
+- **Requests and `hubkit mine`.** A plain ask from you ("delete the stale branches") opens a tracked request that closes only with evidence (`hubkit req done`); chases are counted, the Stop gate and watchdog hold the hub to it, and the overdue limit learns from past requests. `hubkit mine` lists everything open by whose court it is in.
+- **Threads.** An ask, the job routed for it, its PR and the reply owed to whoever asked are linked into one thread (`For: <ID>` in a brief links by hand). `hubkit mine` shows one entry per thread with its current step; when the last step closes, hubkit names the command that closes the ask. A question-form ask ("can you delete the old branch?") is tracked too, and a list of asks becomes parts that close one by one (`hubkit req done ID --part N --evidence ".."`). Work with no PR declares its own check with a `Done-when:` line.
 - **Routed-work tracking.** A hook on `SendMessage` and `Agent` records what the hub asked of whom, one item per (owner, PR). It follows last heard-from, moved heads and GitHub reviews at the PR head.
+- **Standing rules, review debt, stale items.** `hubkit standing add` saves what you said to do every time ("when peer-b approves, merge it"; "route review asks to the reviewer") with your quote; when it fires hubkit opens the order or item and prints the exact NEXT, and the hub does the action. `hubkit mine` also shows the re-reviews you owe and marks open items whose PR is already merged or closed. `report.eod_time` makes the tick write the end-of-day review itself.
+- **Peer roster and pre-route checks.** `hubkit peers` shows each peer's role and free/busy state, learned from its own messages, with its record (jobs done, median time, late). The routed hook warns when work goes to a busy or wrong-role peer while a fitting one is free, when the PR is already merged, closed or reviewed at its head, and when a brief to a role lacks a line the config requires.
 - **Watchdog and wake-up.** `hubkit tick` (cron) and `hubkit watch` (a background process) raise alerts with back-off; a watch exit wakes an idle hub.
-- **Stop gate.** The Stop hook refuses to let the turn end while the hub owes something (no watch running, a stalled item, an unbacked verdict, a question to you that blocks nothing, a "tests pass" claim with no command run, a PR number with no link, an approval on red CI, built work not pushed).
-- **Tool guards.** An optional warn-only PreToolUse hook (`hubkit hooks --merge-guard`) warns about an unordered merge, a post without your typed yes, a banned command, stopping an agent and an unmarked decision card. It never denies.
+- **Stop gate.** The Stop hook refuses to let the turn end while the hub owes something (no watch running, a stalled item, an unbacked verdict, a question to you that blocks nothing, a "tests pass" claim with no command run, a PR number with no link, an approval on red CI, a PR called ready to merge while GitHub shows changes requested or a block, a merged PR reported while a person who asked about it is not yet answered, built work not pushed).
+- **Tool guards.** An optional warn-only PreToolUse hook (`hubkit hooks --merge-guard`) warns about an unordered merge, a post without your typed yes (typed after the draft it approves) or from the wrong account, a banned command, stopping an agent, an unmarked decision card, the hub editing files itself, two agents on one host and a review nobody asked for. It never denies.
 - **Status, digest, end-of-day review.** A status block at session start and on each prompt, a daily archive, `hubkit digest` for when you come back (it also lists the PRs your account opened and what each peer session was asked), `hubkit find WORD` to search orders, work, asks, peer prompts and your PRs, `hubkit eod`, a per-class `hubkit trust` ledger, and `hubkit inbound ingest` to track asks from other people so none goes unanswered.
 
 `SKILL.md` is the behaviour contract the hub session reads. This file is the operator view.
@@ -128,13 +151,22 @@ Every key is documented in [docs/configuration.md](docs/configuration.md).
 
 | Behaviour | Strength |
 |---|---|
+| The Stop hook holds the turn on "ready to merge" while GitHub shows changes requested, a review required, a blocked, behind or conflicting branch or failing CI, and on a merged/approved/reviewed PR claim while a reply is owed to the person who asked about it | Enforced (blocks the turn end) |
 | The Stop hook holds the turn while the hub owes something: no watch running, a stalled item, an unbacked verdict, an unsolved blocker, an item over its estimate, a "done" while your newest prompt is unread, a claim of passing tests with no command run, an approval while CI is not green | Enforced (blocks the turn end) |
+| A final message that states a time in UTC/GMT while `user.timezone` is another zone (`hubkit UTC-TIME`) | Enforced (blocks the turn end) |
+| A final message that asks permission or waits for a go while an urgent order (`no_questions` kind, not held) is open | Enforced (blocks the turn end) |
+| A final message longer than `report.max_lines` or with a code block longer than `report.max_code_lines` (off until set) | Warning only |
+| A Stop-gate check that you mark a false alarm 3 times (`hubkit gate false-alarm ID --why ..`) and that is 30% of its fires in 14 days downgrades itself from blocking to a next-prompt warning; a correction soon after restores it. `verdict`, `ci` and `merge-state` never downgrade. | Adaptive (`hubkit gate ls`) |
+| A typed "from now on ..." style rule: the prompt hook says to save it with `learn.py add --class standing-rule` | Warning only |
 | An order closes only with the evidence its kind requires | Enforced (the close is refused) |
 | A learned class counts as fixed only if a rule for it exists (and, with `--check`, its command passes) | Enforced (the address is refused) |
 | A merge order closes only with the merge commit sha | Enforced (the close is refused) |
 | A second job sent to a busy owner while an order is open; a brief that bans the action a blocker needs; a brief with no done-when, output or estimate line; more than 4 agents holding work | Warning only |
 | `gh pr merge` with no live order naming that PR, a post without your typed yes, a banned command, `TaskStop`, a repeated command, a whole-suite `pytest`, an unmarked decision card (`hubkit hook pretool`) | Warning only, never denies |
+| A command matching `guards.needs_order` (for example a ticket-creating one) or a schedule/loop/cron tool or command, with no typed ask of the user in the last `guards.window_min` minutes (`hubkit watch` is exempt) | Warning only, never denies |
 | `hubkit doctor` warning when your `intents.toml` lacks keys the example has, a hook registered twice, or no scheduled `hubkit eod` | Warning only |
+
+Every Stop-gate rule is named by a check id and holds the turn once per stop: when the harness has already sent the hub back (`stop_hook_active`), the turn is allowed to end.
 
 Details and exact rules: [SKILL.md](SKILL.md) and [docs/architecture.md](docs/architecture.md#stop-gate-gatepy).
 
@@ -168,6 +200,10 @@ hubkit has only been run on Linux so far, and the full test suite, ruff and mypy
 - Redaction matches secret shapes and `key=value` forms. Natural-language secrets ("the password is hunter2") are not caught. See [SECURITY.md](SECURITY.md).
 - Whether a message to a peer is an ask, a reply or a follow-up is decided by rules in `scripts/hubcore/routed.py`; an unusual message can be misjudged.
 - The learn loop needs the hub model to act on the `CORRECTION` line; hubkit cannot make it record or write a rule, only refuse to mark a class fixed without one.
+- Whether a typed sentence is an ask is decided from verb lists in `intents.toml`; a casual remark can open a request and an oddly worded ask can be missed. `hubkit req drop ID --not-a-request` and `hubkit req add` correct it, and a verb that keeps misfiring is muted.
+- The checks are proven at hook level by the test suite. No automated test drives a live Claude Code session, so whether the hub model acts on a line it is shown is checked only by use.
+- The watchdog can alert the user on the desktop; it cannot make an idle hub session act.
+- Each new warning is rate-limited on its own, but there is no overall cap on lines per prompt yet.
 - `skills/hub-mep` describes an optional integration with the `mep` task-list CLI and is of no use without it.
 - Hooks are written against the Claude Code hook payloads of late 2026; `payload-samples/` in the state dir records the real payload keys so a schema change is visible.
 

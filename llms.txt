@@ -1,0 +1,22 @@
+# hubkit
+
+> hubkit is a session supervisor for Claude Code: hooks and a CLI that keep the one hub session coordinating other sessions honest. It gives each order a clock and an evidence check, tracks requests and routed work, blocks a premature "done", and learns from the user's corrections. Read verbs take --json; exit codes are 0 ok, 2 bad usage, 3 refused, 4 not found; every error ends with a NEXT line.
+
+## Start here
+
+- [README](README.md): what it does, install, the five commands an agent needs first
+- [Command reference](docs/commands.md): every verb, exit codes, --json
+
+## Behaviour
+
+- [SKILL.md](SKILL.md): the contract the hub session follows
+
+## Reference
+
+- [Architecture](docs/architecture.md): hooks, state, the learn loop
+- [Configuration](docs/configuration.md): every config key
+- [Troubleshooting](docs/troubleshooting.md): symptoms and fixes
+
+## Optional
+
+- [Changelog](CHANGELOG.md): what changed in each release

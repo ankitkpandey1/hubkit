@@ -11,7 +11,7 @@ import traceback
 from pathlib import Path
 from typing import TypeGuard
 
-from . import compat, config, gate, lessons, playbooks, routed, status, store
+from . import compat, config, gate, gatectl, guardwatch, lessons, playbooks, preroute, replies, roster, routed, standing, status, store
 from .orders import Orders, _word_re, hook_intake
 from .redact import redact
 from .status import read_status, render_block
@@ -206,6 +206,24 @@ DISCARD = re.compile(r"(?i)\b(?:discard|drop|scrap|forget)\b[^.\n]{0,30}\bdraft\
 SEND = re.compile(r"\bmep\s+send\b")
 
 
+def send_re(cfg: dict) -> re.Pattern[str]:
+    """The user's chat-send command: `tools.send_regex`, else the built-in `mep send`."""
+    want = str(cfg["tools"].get("send_regex") or "")
+    return re.compile(want) if want else SEND
+
+
+def draft_re(cfg: dict) -> re.Pattern[str]:
+    """What asks for a draft: `tools.draft_regex`, else the built-in word `draft`."""
+    want = str(cfg["tools"].get("draft_regex") or "")
+    return re.compile(want) if want else DRAFT
+
+
+def discard_re(cfg: dict) -> re.Pattern[str]:
+    """What discards a draft: `tools.discard_regex`, else the built-in `discard/drop/scrap/forget ... draft`."""
+    want = str(cfg["tools"].get("discard_regex") or "")
+    return re.compile(want) if want else DISCARD
+
+
 def draft_items(cfg: dict) -> list[dict]:
     return [i for i in status.work_load(store.state(cfg)) if i.get("kind") == "active" and i["title"].startswith("draft: ")]
 
@@ -215,12 +233,16 @@ def close_drafts(cfg: dict, note: str) -> None:
         status.work_done(cfg, i["id"], note)
 
 
-def draft_intake(cfg: dict, text: str) -> None:
-    """A typed ask for a draft opens one work item; discarding the draft closes it (`mep send` closes it in the pretool hook)."""
-    if DISCARD.search(text):
+def draft_intake(cfg: dict, text: str) -> bool:
+    """A typed ask for a draft opens one work item; discarding the draft closes it (the send command closes it in the
+    pretool hook). True when the prompt is about a draft: the draft item tracks it, so it opens no request."""
+    if discard_re(cfg).search(text):
         close_drafts(cfg, "discarded")
-    elif DRAFT.search(text) and not draft_items(cfg):
+    elif draft_re(cfg).search(text) and not draft_items(cfg):
         status.work_add(cfg, "active", "draft: " + " ".join(text.split())[:80], note="open until `mep send` or discarded")
+    elif draft_re(cfg).search(text):
+        guardwatch.touch_draft(cfg)  # a changed draft needs a fresh yes
+    return bool(draft_re(cfg).search(text))
 
 
 def no_playbook(cfg: dict, orders: Orders, text: str, before: set[str], pbs: list[dict], now: float) -> list[str]:
@@ -240,7 +262,7 @@ def hook_prompt(cfg: dict, payload: dict) -> str:
         return ""
     sd = store.state(cfg)
     store.touch_seen(sd, "prompt")
-    text = PASTED.sub(" ", payload.get("prompt") or "")  # words inside pasted content are quoted text, not his order
+    text = PASTED.sub(" ", payload.get("prompt") or "")  # words inside pasted content are quoted text, not the user's order
     origin = (payload.get("origin") or {}).get("kind")
     now = time.time()
     reload = reload_line(cfg)
@@ -249,14 +271,22 @@ def hook_prompt(cfg: dict, payload: dict) -> str:
         routed.heard(cfg, [(now, peer, text)])
     if not store.is_human(text, origin):
         return reload
-    draft_intake(cfg, text)
+    drafting = draft_intake(cfg, text)
     orders = Orders(cfg)
     before = {o["id"] for o in orders.live()}
     intake = hook_intake(orders, text)
+    from . import owed, sweeps
+
+    if not drafting:
+        intake += owed.intake(cfg, orders, text, bool({o["id"] for o in orders.live()} - before), now)  # the user's plain asks: open, or chase
     pbs = playbooks.match(text)
     playbooks.note_turn(cfg, [pb["name"] for pb in pbs])
     corr = correction_line(orders, sd, text, now, [pb["name"] for pb in pbs])
-    return "\n".join([*([reload] if reload else []), *routed.prompt_lines(cfg, now), *intake, *playbooks.inject(pbs), *no_playbook(cfg, orders, text, before, pbs, now), *unordered_chase_lines(cfg, orders, text, now), *([corr] if corr else [])])
+    if corr:
+        roster.note_correction(cfg, now)  # a correction soon after a brief to a role is counted against that role
+    rule = standing.rule_line(orders.intents, sd, text, now)
+    gate_lines = gatectl.prompt_lines(cfg, bool(corr), now)  # a correction restores a check that just warned; queued warnings show once
+    return "\n".join([*([reload] if reload else []), *gate_lines, *([rule] if rule else []), *routed.prompt_lines(cfg, now), *sweeps.prompt_lines(cfg, now), *intake, *playbooks.inject(pbs), *no_playbook(cfg, orders, text, before, pbs, now), *unordered_chase_lines(cfg, orders, text, now), *([corr] if corr else [])])
 
 
 def _answer_text(resp: object) -> str:
@@ -275,7 +305,7 @@ def hook_answer(cfg: dict, payload: dict) -> str:
     text = _answer_text(payload.get("tool_response"))
     if not store.is_human(text):
         return ""
-    routed.close_asks(cfg, time.time())  # the user answered the card: nothing is blocked on him now
+    routed.close_asks(cfg, time.time())  # the user answered the card: nothing is blocked on the user now
     return "\n".join(hook_intake(Orders(cfg), text))
 
 
@@ -300,6 +330,15 @@ def hook_routed(cfg: dict, payload: dict) -> str:
             out += (f" DEFAULTED ({item.get('estimate_basis', '')}), the brief had no `Estimate: <n>m` line. "
                     f"Set it: hubkit work estimate {item['id']} --minutes N --why \"...\"")
     out += queue_warning(cfg, item)
+    from . import threads
+
+    for tl in threads.on_route(cfg, item, brief):
+        out += f"\n{tl}"
+    named = " ".join([brief, str(ti.get("summary") or ti.get("description") or "")])
+    new_ask = len(item.get("events", [])) == 1
+    for pw in [*preroute.check(cfg, brief, str(ti.get("summary") or ti.get("description") or "")), *roster.on_route(cfg, item, brief),
+               *guardwatch.host_lines(cfg, item, named), *([w] if new_ask and (w := guardwatch.unasked_review(cfg, item, time.time())) else [])]:
+        out += f"\n{pw}"
     for w in (lessons.brief_missing(cfg, str(ti.get("message") or ti.get("prompt") or "")), lessons.agent_cap_warning(cfg)):
         out += f"\n{w}" if w else ""
     return out + (f"\n{forbids}" if forbids else "")
@@ -318,10 +357,12 @@ def hook_skill(cfg: dict, payload: dict) -> str:
 def hook_pretool(cfg: dict, payload: dict) -> str:
     """PreToolUse on Bash and TaskStop: warn (never deny) about an unordered merge, an unconfirmed post, a banned command, a stopped agent."""
     tool = str(payload.get("tool_name") or "")
-    if not is_hub(cfg, payload) or tool not in ("Bash", "TaskStop", "AskUserQuestion"):
+    if not is_hub(cfg, payload) or tool not in ("Bash", "TaskStop", "AskUserQuestion", *guardwatch.EDIT_TOOLS, *guardwatch.schedule_tools(cfg)):
         return ""
-    if tool == "Bash" and SEND.search(str((payload.get("tool_input") or {}).get("command") or "")):
+    cmd = str((payload.get("tool_input") or {}).get("command") or "")
+    if tool == "Bash" and send_re(cfg).search(cmd):
         close_drafts(cfg, "sent")
+        replies.auto_replied(cfg, cmd)
     warning = lessons.tool_warning(cfg, tool, payload.get("tool_input") or {})
     if not warning:
         return ""

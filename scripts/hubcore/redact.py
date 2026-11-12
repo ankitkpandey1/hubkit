@@ -1,4 +1,6 @@
-"""Secret redaction. Every write to state goes through redact_obj (see store.append_row)."""
+"""Secret redaction. Every write to state goes through redact_obj (see store.append_row).
+
+A secret is replaced in place by `[REDACTED]`; the text around it is kept (see `redact` for the exact rules)."""
 
 from __future__ import annotations
 
@@ -14,49 +16,64 @@ PATTERNS = [
     re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s:/@]+:[^\s@]+@"),
     re.compile(r"(?i)\b(?:authorization:\s*)?bearer\s+[A-Za-z0-9._~+/=-]{8,}"),
     re.compile(
-        r"(?i)[\w.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|auth|credential"
-        r"|private[_-]?key|access[_-]?key)[\w.-]*\s*[=:]\s*\S+"
+        r"(?i)[\w.-]*"
+        r"(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|auth|credentials?|private[_-]?key|access[_-]?key)"
+        r"(?:[_.-][A-Za-z0-9]+)*[\"']?\s*[=:]\s*[\"']?\S+"
     ),
+    re.compile(r"(?i)(?<![A-Za-z0-9])authorization\s*[=:]\s*(?:basic\s+)?\S+"),
     re.compile(r"\bsk-ant-[A-Za-z0-9_-]{8,}"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"),
     re.compile(r"glpat-[A-Za-z0-9_-]{15,}"),
     re.compile(r"AIza[0-9A-Za-z_-]{30,}"),
-    re.compile(r"(?<![A-Za-z0-9+])(?=[A-Za-z0-9+]*\d)(?=[A-Za-z0-9+]*[A-Za-z])[A-Za-z0-9+]{32,}"),
 ]
 QUOTE_MAX = 300
+LONG_RUN = re.compile(r"(?<![A-Za-z0-9+])(?=[A-Za-z0-9+]*\d)(?=[A-Za-z0-9+]*[A-Za-z])[A-Za-z0-9+]{32,}")
+COMMIT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{32})")
+MARK = "[REDACTED]"
+
+
+def _spans(text: str) -> list[tuple[int, int]]:
+    """Every secret-shaped span of `text`, overlapping or touching spans merged."""
+    found = [m.span() for pat in PATTERNS for m in pat.finditer(text)]
+    # A long run is a secret unless it is pure lowercase hex of exactly 40 (git commit id) or 32 (md5 / uuid
+    # without dashes) characters: those are ids people quote in prose. Mixed-case, base64-like or longer runs stay masked.
+    found += [m.span() for m in LONG_RUN.finditer(text) if not COMMIT_ID.fullmatch(m.group())]
+    merged: list[tuple[int, int]] = []
+    for lo, hi in sorted(found):
+        if merged and lo <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(hi, merged[-1][1]))
+        else:
+            merged.append((lo, hi))
+    return merged
 
 
 def redact(text: str) -> tuple[str, int]:
-    """Return (text, hits). With hits, keep the prefix before the first hit and mark the rest."""
-    first = len(text)
-    hits = 0
-    for pat in PATTERNS:
-        for m in pat.finditer(text):
-            hits += 1
-            first = min(first, m.start())
-    if not hits:
+    """Return (text, hits): each secret-shaped span is replaced in place by `[REDACTED]`, the text around it is kept.
+
+    A key=value secret is matched by whole key name or key segment (`token`, `api_token`, `AUTH_TOKEN`, `x-auth-token`),
+    never by a longer word that merely contains one (`author`, `tokenizer`). A long alphanumeric run (32+ chars with a
+    digit and a letter) is masked unless it is pure lowercase hex of exactly 40 characters (a git commit id) or 32
+    (a dashless uuid / md5): those ids are kept so quotes and notes stay readable."""
+    spans = _spans(text)
+    if not spans:
         return text, 0
-    return f"{text[: min(first, QUOTE_MAX)]}[REDACTED {hits}]", hits
+    out: list[str] = []
+    pos = 0
+    for lo, hi in spans:
+        out += [text[pos:lo], MARK]
+        pos = hi
+    out.append(text[pos:])
+    return "".join(out), len(spans)
 
 
-SHA_KEYS = frozenset({"head", "heads", "old", "new", "commit", "oid", "verdict_acked"})
-GIT_SHA = re.compile(r"[0-9a-f]{40}")
-
-
-def redact_obj[T](obj: T, limit: int = QUOTE_MAX * 2, sha_ok: bool = False) -> T:
-    """Redact every string in a JSON-like structure; cap string length.
-
-    A value that is exactly a 40-hex git sha is kept when it sits under a head/commit field (`SHA_KEYS`): it is
-    a public commit id there, and redacting it breaks the head comparison. Anywhere else it is still redacted."""
+def redact_obj[T](obj: T, limit: int = QUOTE_MAX * 2) -> T:
+    """Redact every string in a JSON-like structure (in place, see `redact`); cap string length."""
     if isinstance(obj, str):
-        if sha_ok and GIT_SHA.fullmatch(obj):
-            return obj
-        text, _ = redact(obj)
-        return cast(T, text[:limit])
+        return cast(T, redact(obj)[0][:limit])
     if isinstance(obj, dict):
-        return cast(T, {k: redact_obj(v, limit, sha_ok or k in SHA_KEYS) for k, v in obj.items()})
+        return cast(T, {k: redact_obj(v, limit) for k, v in obj.items()})
     if isinstance(obj, list):
-        return cast(T, [redact_obj(v, limit, sha_ok) for v in obj])
+        return cast(T, [redact_obj(v, limit) for v in obj])
     return obj
 
 
@@ -65,14 +82,14 @@ def count_hits(text: str) -> int:
     return redact(text)[1]
 
 
-def count_hits_obj(obj: object, sha_ok: bool = False) -> int:
-    """count_hits over a parsed row, with the same head-field exemption as redact_obj."""
+def count_hits_obj(obj: object) -> int:
+    """count_hits over a parsed row."""
     if isinstance(obj, str):
-        return 0 if sha_ok and GIT_SHA.fullmatch(obj) else count_hits(obj)
+        return count_hits(obj)
     if isinstance(obj, dict):
-        return sum(count_hits_obj(v, sha_ok or k in SHA_KEYS) for k, v in obj.items())
+        return sum(count_hits_obj(v) for v in obj.values())
     if isinstance(obj, list):
-        return sum(count_hits_obj(v, sha_ok) for v in obj)
+        return sum(count_hits_obj(v) for v in obj)
     return 0
 
 

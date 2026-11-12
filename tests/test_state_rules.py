@@ -49,7 +49,7 @@ def test_five_clean_accepts_earn_auto_and_a_reject_is_shown(env):
     env.run("trust", "record", "--class", "send-mail", "--outcome", "reject")
     env.run("tick", "--no-notify")
     out = env.hook("session", {"session_id": "sess-hub", "source": "compact"}).stdout
-    assert "auto (do it, then tell him): tidy-docs" in out and "he has rejected: send-mail" in out
+    assert "auto (do it, then tell the user): tidy-docs" in out and "the user has rejected: send-mail" in out
     env.run("trust", "record", "--class", "tidy-docs", "--outcome", "edit")
     assert "tidy-docs: ask" in env.run("trust", "ls").stdout
     assert env.run("trust", "record", "--class", "x", "--outcome", "maybe").returncode == 2
@@ -60,7 +60,7 @@ def test_a_merge_order_closes_only_on_the_merge_commit_sha(env):
     env.prompt("merge https://github.com/acme/repo/pull/101 now")
     oid = env.run("order", "ls").stdout.split()[0]
     r = env.run("order", "close", oid, "--evidence", "merged=PR 101 merged")
-    assert r.returncode == 2 and "merge commit sha" in r.stderr
+    assert r.returncode == 3 and "merge commit sha" in r.stderr
     assert env.run("order", "close", oid, "--evidence", "merged=PR 101 merged as 1a2b3c4d").returncode == 0
 
 

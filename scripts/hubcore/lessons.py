@@ -90,7 +90,7 @@ def unswept_asks(cfg: dict, last: str, now: float | None = None) -> str | None:
     if prompts[-1]["ts"] <= max(swept, _last_work_done(cfg, now)):
         return None
     return (
-        "hubkit: you say it is done but have not re-read his words since his last prompt. NEXT: hubkit asks ls --since 12h; "
+        "hubkit: you say it is done but have not re-read the user's words since their last prompt. NEXT: hubkit asks ls --since 12h; "
         "list every requirement in them and tick each with evidence before saying done"
     )
 
@@ -187,7 +187,7 @@ def unchecked_claim(cfg: dict, last: str, transcript: str | Path | None) -> str 
         return None
     return (
         f"hubkit: your message claims {hit!r} but this turn read nothing. A report that something is gone, or is a person's call, "
-        "is checked, not relayed. NEXT: read the code or record that writes it (or what he already decided), then say it"
+        "is checked, not relayed. NEXT: read the code or record that writes it (or what the user already decided), then say it"
     )
 
 
@@ -200,7 +200,7 @@ def pending_claim(cfg: dict, last: str, transcript: str | Path | None) -> str | 
     if not hit or lookups_this_turn(transcript) != 0:
         return None
     return (
-        f"hubkit: your message lists what is pending on him ({hit!r}) but this turn read nothing. That list goes stale in minutes. "
+        f"hubkit: your message lists what is pending on the user ({hit!r}) but this turn read nothing. That list goes stale in minutes. "
         "NEXT: read the open items now (mep ls, or the record that holds them), then say it"
     )
 
@@ -352,7 +352,7 @@ def merge_target(command: str) -> str | None:
 
 
 def merge_warning(cfg: dict, command: str, now: float | None = None) -> str | None:
-    """A warning when a merge has neither a live order nor a typed word of his naming that PR. Never denies."""
+    """A warning when a merge has neither a live order nor a typed word of the user's naming that PR. Never denies."""
     num = merge_target(command)
     if num is None:
         return None
@@ -371,8 +371,8 @@ def merge_warning(cfg: dict, command: str, now: float | None = None) -> str | No
             return None
     what = f"#{num}" if num else "a PR"
     return (
-        f"hubkit WARNING: merging {what} with no live order and none of his typed words naming it. A merge is done on his order only. "
-        'NEXT: stop unless he ordered it; if he did, open the order: hubkit order open --kind merge --quote "<his words>"'
+        f"hubkit WARNING: merging {what} with no live order and none of the user's typed words naming it. A merge is done on the user's order only. "
+        'NEXT: stop unless the user ordered it; if they did, open the order: hubkit order open --kind merge --quote "<their words>"'
     )
 
 
@@ -406,11 +406,15 @@ def tool_warning(
         if _typed_recently(cfg, STOP_WORD, 1800, now):
             return None
         return (
-            "hubkit WARNING: stopping a running agent that he did not ask to stop. Its half-done work is lost. "
-            "NEXT: let it finish and harvest the result, or SendMessage it to redirect; stop it only on his word"
+            "hubkit WARNING: stopping a running agent that the user did not ask to stop. Its half-done work is lost. "
+            "NEXT: let it finish and harvest the result, or SendMessage it to redirect; stop it only on the user's word"
         )
     if tool == "AskUserQuestion":
         return card_warning(tool_input)
+    from . import guardwatch
+
+    if w := guardwatch.warning(cfg, tool, tool_input, now):
+        return w
     command = str(tool_input.get("command") or "")
     if tool != "Bash" or not command:
         return None
@@ -419,11 +423,11 @@ def tool_warning(
     if again := repeat_warning(cfg, command, now):
         return again
     if m := BANNED_CMD.search(command):
-        return f"hubkit WARNING: {m[0].strip()!r} is a banned command. NEXT: use the safe form (revert with a new commit, remove one named file, send a normal push) or ask him"
-    if POST_CMD.search(command) and not _typed_recently(cfg, YES_WORD, 600, now):
+        return f"hubkit WARNING: {m[0].strip()!r} is a banned command. NEXT: use the safe form (revert with a new commit, remove one named file, send a normal push) or ask the user"
+    if POST_CMD.search(command) and not guardwatch.typed_yes(cfg, YES_WORD, 600, now):
         return (
-            "hubkit WARNING: posting to a person or a thread with no typed yes of his in the last 10 minutes. A message goes out on his word, "
-            "from the right account. NEXT: show him the draft and send on his yes"
+            "hubkit WARNING: posting to a person or a thread with no typed yes from the user in the last 10 minutes. A message goes out on the user's word, "
+            "from the right account. NEXT: show the user the draft and send on their yes"
         )
     return merge_warning(cfg, command, now)
 
@@ -604,5 +608,5 @@ def card_warning(tool_input: dict) -> str | None:
     for q in tool_input.get("questions") or []:
         opts = q.get("options") or []
         if opts and "recommend" not in str(opts[0].get("label", "")).lower():
-            return "hubkit WARNING: the first option of this card is not marked (Recommended). Put your recommendation first so he can accept it in seconds. NEXT: reorder and label it"
+            return "hubkit WARNING: the first option of this card is not marked (Recommended). Put your recommendation first so the user can accept it in seconds. NEXT: reorder and label it"
     return None

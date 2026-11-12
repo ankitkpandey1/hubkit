@@ -1,8 +1,8 @@
 """Per-class trust from what the user did with the hub's proposals: accepted, edited, rejected.
 
 `hubkit trust record --class C --outcome accept|edit|reject` appends to trust.jsonl; `trust ls` shows each class as
-`auto` (enough accepts and nothing else: do it and tell him) or `ask` (propose first). The session block names the classes
-that earned `auto` and those he has rejected."""
+`auto` (enough accepts and nothing else: do it and tell the user) or `ask` (propose first). The session block names the classes
+that earned `auto` and those the user has rejected."""
 
 from __future__ import annotations
 
@@ -37,5 +37,5 @@ def lines(cfg: dict) -> list[str]:
     modes = mode(cfg)
     rejected = sorted({r["cls"] for r in store.read_rows(store.state(cfg) / "trust.jsonl")[0] if r["outcome"] == "reject"})
     auto = sorted(c for c, m in modes.items() if m == "auto")
-    parts = ([f"auto (do it, then tell him): {', '.join(auto)}"] if auto else []) + ([f"he has rejected: {', '.join(rejected)}"] if rejected else [])
+    parts = ([f"auto (do it, then tell the user): {', '.join(auto)}"] if auto else []) + ([f"the user has rejected: {', '.join(rejected)}"] if rejected else [])
     return ["trust: " + "; ".join(parts)] if parts else []

@@ -41,7 +41,7 @@ def test_hooks_block_is_valid_settings_json_with_every_event(env):
     assert any("hook answer" in c for c in cmds) and any("hook routed" in c for c in cmds) and any("hook skill" in c for c in cmds)
     assert all("$HOME/.claude/skills/hub/scripts/hubkit" in h["command"] for gs in block.values() for g in gs for h in g["hooks"])
     guarded = json.loads(env.run("hooks", "--merge-guard").stdout)["hooks"]
-    assert guarded["PreToolUse"][0]["matcher"] == "Bash|TaskStop|AskUserQuestion" and "hook pretool" in guarded["PreToolUse"][0]["hooks"][0]["command"]
+    assert guarded["PreToolUse"][0]["matcher"] == "Bash|TaskStop|AskUserQuestion|CronCreate|ScheduleWakeup|Edit|Write|NotebookEdit" and "hook pretool" in guarded["PreToolUse"][0]["hooks"][0]["command"]
 
 
 @pytest.mark.skipif(not shutil.which("uv"), reason="needs uv to build and install a wheel")

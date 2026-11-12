@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import time
 
-from . import lessons, playbooks, routed, slow, store
+from . import gatectl, lessons, mergestate, playbooks, replies, reportcheck, routed, slow, store
 from .orders import PR_REF, Orders
 from .status import work_load
 
@@ -97,7 +97,7 @@ BLOCKED_WORDS = ["blocked", "is down", "are down", "failed", "failing", "no host
 NEGATION = re.compile(r"(?i)\b(no|not|nothing|nobody|none|never|nor|without|isn't|aren't|wasn't|weren't|hasn't|haven't|doesn't|don't)\s+(?:\w+\s+){0,3}$")
 
 
-# A wait that is the user's own stop or hold is not a blocker to solve: waiting on his word, or work he put on hold.
+# A wait that is the user's own stop or hold is not a blocker to solve: waiting on their word, or work they put on hold.
 USER_WAIT = re.compile(
     r"(?i)\b(?:wait(?:s|ing)?|awaiting)\s+(?:on|for)\s+(?:your|you|his|her|the user'?s?)\b"
     r"|\b(?:on\s+hold|held|(?:you|he|she)\s+(?:asked|told|said|ordered)\s+(?:me\s+)?to\s+(?:hold|stop|wait|pause))\b"
@@ -141,35 +141,87 @@ def blocker_reasons(cfg: dict, last: str, now: float) -> list[str]:
     return out
 
 
-def stop_reasons(cfg: dict, last: str, now: float | None = None, transcript: str | None = None, cwd: str | None = None) -> list[str]:
-    """Every reason the turn cannot end yet, each with its exact action. Empty = the turn may end."""
+PERMISSION_WORDS = ["shall i", "should i", "do you want me to", "waiting for your go", "waiting on your go", "let me know if", "want me to proceed", "want me to"]
+
+
+def no_question_orders(cfg: dict) -> list[dict]:
+    """Open orders (not held) of a kind with `no_questions = true` that have no recorded blocker waiting on the user."""
+    orders = Orders(cfg)
+    out = []
+    for o in orders.live():
+        if o["state"] != "open" or not orders.intents.get("kinds", {}).get(o["kind"], {}).get("no_questions"):
+            continue
+        b = o.get("blocker") or {}
+        if b and re.search(r"(?i)\b(user|you)\b", f"{b.get('holder', '')} {b.get('on', '')}"):
+            continue
+        out.append(o)
+    return out
+
+
+def urgent_ask(cfg: dict, last: str) -> list[str]:
+    """A final message that asks permission, waits for a go or ends in a question while an urgent order is open: the user already ordered it.
+    A work item of kind `ask` does not lift this."""
+    held = no_question_orders(cfg)
+    if not held or not last:
+        return []
+    words = Orders(cfg).intents.get("stop_gate", {}).get("permission_words", PERMISSION_WORDS)
+    low = last.lower()
+    if not (last.rstrip().endswith("?") or is_question(cfg, last) or any(w.lower() in low for w in words)):
+        return []
+    oid = held[0]["id"]
+    return [f"hubkit: the order {oid} is urgent and the user already ordered it; do not ask. NEXT: take the action; if it truly cannot proceed, "
+            f'record the blocker: hubkit order block {oid} --on "..." --fix "..." --holder ...']
+
+
+def stop_checks(cfg: dict, last: str, now: float | None = None, transcript: str | None = None, cwd: str | None = None) -> list[tuple[str, str]]:
+    """(check id, reason) for everything that would hold the turn, before the per-check mode is applied."""
     now = now or time.time()
+    out: list[tuple[str, str]] = []
+
+    def add(cid: str, items: list[str] | str | None) -> None:
+        out.extend((cid, x) for x in ([items] if isinstance(items, str) else items or []) if x)
+
     ci_bad = ci_not_green(cfg, last)  # before prompt_lines: a reviewed item closes there
-    reasons = routed.prompt_lines(cfg, now)
-    reasons += blocker_reasons(cfg, last, now)
-    if r := lessons.unpushed_work(last, cwd, transcript):
-        reasons.append(r)
-    reasons += [r for r in (lessons.unswept_asks(cfg, last, now), lessons.unchecked_claim(cfg, last, transcript), lessons.pending_claim(cfg, last, transcript), lessons.unrun_claim(cfg, last, transcript)) if r]
+    add("routed", routed.prompt_lines(cfg, now))
+    add("blocker", blocker_reasons(cfg, last, now))
+    add("unpushed", lessons.unpushed_work(last, cwd, transcript))
+    add("unswept-asks", lessons.unswept_asks(cfg, last, now))
+    add("unchecked-claim", lessons.unchecked_claim(cfg, last, transcript))
+    add("pending-claim", lessons.pending_claim(cfg, last, transcript))
+    add("unrun-claim", lessons.unrun_claim(cfg, last, transcript))
+    add("utc-time", reportcheck.utc_time(cfg, last))
+    out += reportcheck.form(cfg, last)
     if refs := lessons.bare_refs(cfg, last):
-        reasons.append(f"hubkit: your message names {', '.join(refs[:4])} with no link. NEXT: give the full URL of each PR or issue so he can click it")
+        add("bare-refs", f"hubkit: your message names {', '.join(refs[:4])} with no link. NEXT: give the full URL of each PR or issue so the user can click it")
     try:
-        reasons += slow.gate_lines(cfg, now)
+        add("slow", slow.gate_lines(cfg, now))
     except Exception as e:  # a failing estimate check must not wedge the hub's turn end
         store.append_row(store.state(cfg) / "hook-errors.jsonl", {"where": "slow.gate", "error": repr(e)[:200]})
+    from . import owed
+
+    add("requests", owed.gate_lines(cfg, last, now))
     if open_work(cfg) and not watch_live(cfg):
-        reasons.append(f"hubkit: nothing will wake you when routed work stalls. NEXT: start in the background: {WATCH_CMD}")
-    reasons += [f"hubkit: the ask {i['id']} ({i['title'][:50]}) was asked {i['asked']} times with no answer. Stop asking. NEXT: take the safest default, record it with the reason, "
-                f"and go on: hubkit work done {i['id']} --note \"defaulted to ...\"" for i in work_load(store.state(cfg)) if i.get("kind") == "ask" and int(i.get("asked", 1)) >= 3]
-    for n in unverified_verdict(cfg, last):
-        reasons.append(f"hubkit: your message gives a verdict on #{n}, but GitHub shows no review at its current head "
-                       "(agent words are not evidence). NEXT: correct the message; relay a verdict only after the item closes itself")
+        add("watch", f"hubkit: nothing will wake you when routed work stalls. NEXT: start in the background: {WATCH_CMD}")
+    add("ask-stale", [f"hubkit: the ask {i['id']} ({i['title'][:50]}) was asked {i['asked']} times with no answer. Stop asking. NEXT: take the safest default, record it with the reason, "
+                      f"and go on: hubkit work done {i['id']} --note \"defaulted to ...\"" for i in work_load(store.state(cfg)) if i.get("kind") == "ask" and int(i.get("asked", 1)) >= 3])
+    add("verdict", [f"hubkit: your message gives a verdict on #{n}, but GitHub shows no review at its current head "
+                    "(agent words are not evidence). NEXT: correct the message; relay a verdict only after the item closes itself" for n in unverified_verdict(cfg, last)])
     if ci_bad:
-        reasons.append(f"hubkit: your message approves {', '.join(ci_bad)} but CI at the head is not green. NEXT: say CI is not green, or wait for it, before relaying an approval")
+        add("ci", f"hubkit: your message approves {', '.join(ci_bad)} but CI at the head is not green. NEXT: say CI is not green, or wait for it, before relaying an approval")
+    add("reply-owed", replies.owed_reasons(cfg, last))
+    add("merge-state", mergestate.not_mergeable(cfg, last))
     if cmd := playbooks.missing(cfg):
-        reasons.append(f"hubkit: '{cmd}' was done with no playbook to follow, and none was saved. NEXT: hubkit how save <name> --trigger <word> --steps-file <file> --quote \"<his words>\"")
-    if (r := lessons.prose_ask(last, transcript, is_question(cfg, last) and blocked_on_user(cfg))):
-        reasons.append(r)
+        add("playbook", f"hubkit: '{cmd}' was done with no playbook to follow, and none was saved. NEXT: hubkit how save <name> --trigger <word> --steps-file <file> --quote \"<their words>\"")
+    add("prose-ask", lessons.prose_ask(last, transcript, is_question(cfg, last) and blocked_on_user(cfg)))
+    add("urgent-ask", urgent_ask(cfg, last))
     if is_question(cfg, last) and not blocked_on_user(cfg):
-        reasons.append("hubkit: you ended on a question to the user but nothing is blocked on him. NEXT: settle it from the record "
-                       "or route it; only if it truly needs him run: hubkit work add --kind ask --title \"<the one question>\" --note \"<ordered work it blocks>\"")
-    return reasons
+        add("question", "hubkit: you ended on a question to the user but nothing is blocked on them. NEXT: settle it from the record "
+                        "or route it; only if it truly needs them run: hubkit work add --kind ask --title \"<the one question>\" --note \"<ordered work it blocks>\"")
+    return out
+
+
+def stop_reasons(cfg: dict, last: str, now: float | None = None, transcript: str | None = None, cwd: str | None = None) -> list[str]:
+    """Every reason the turn cannot end yet, each with its exact action and its check id. Empty = the turn may end.
+    A check in warn mode is queued as a warning for the next prompt instead (see gatectl)."""
+    now = now or time.time()
+    return gatectl.apply(cfg, stop_checks(cfg, last, now, transcript, cwd), now)
