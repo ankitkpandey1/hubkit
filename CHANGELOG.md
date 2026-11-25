@@ -21,6 +21,8 @@ Brings in everything the live hub had that the public package lacked, so a switc
 - `hubkit status` shows at most three REGRESSED lines and folds the rest into one, so routed work is not pushed out of the capped block.
 
 ### Changed
+- Stored state masks a bare 40-hex or 32-hex id unless it sits under a head field (`head`, `heads`, `old`, `new`, `commit`, `oid`, `verdict_acked`), as the live hub always did; `hubkit doctor` counts it the same way. `redact()` on plain text still keeps such ids in prose.
+- A scan of stored watcher output that finds nothing new no longer writes `work.json`; review-ask reply lines read `reply W1 REVIEW ASK name`, and `status` lists replies before routed work.
 - Build backend pinned to `hatchling==1.27.0`: newer hatchling writes Metadata-Version 2.5, which twine 6.2 rejects.
 
 ## [0.5.0] - 2026-11-25

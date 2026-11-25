@@ -551,6 +551,38 @@ def test_a_legacy_priority_item_is_not_merged_into_or_gated_as_a_task(env):
     assert not old.get("task") and new["task"] and old["id"] != new["id"]
 
 
+def test_a_checkup_lists_tasks_first_and_done_restarts_their_clock(env):
+    strict(env)
+    env.bind()
+    env.run("work", "add", "--kind", "routed", "--owner", "peer-z", "--title", "check the billing fix and report back")
+    env.prompt("task: fix the login bug")
+    rows = [x for x in env.run("checkup").stdout.splitlines() if x.startswith("  W")]
+    assert rows[0].startswith("  W2") and "TASK" in rows[0] and rows[1].startswith("  W1")
+    age(env, 16)
+    assert "ALERT" in tick(env)
+    assert env.run("checkup", "done").returncode == 0
+    assert "TASK CHECK DUE" not in tick(env)
+
+
+def test_non_task_rows_keep_the_30_minute_clock(env):
+    strict(env)
+    env.bind()
+    env.run("work", "add", "--kind", "routed", "--owner", "peer-z", "--title", "check the billing fix and report back")
+    rows = work(env)
+    rows[0]["added"] -= 3 * 3600
+    rows[0]["routed_at"] = rows[0]["added"]
+    (env.state / "work.json").write_text(json.dumps(rows))
+    env.run("checkup", "done")
+    p = env.state / "checkups.jsonl"
+    r = [json.loads(x) for x in p.read_text().splitlines()]
+    r[-1]["ts"] -= 20 * 60
+    p.write_text("".join(json.dumps(x) + "\n" for x in r))
+    assert "CHECKUP DUE" not in env.prompt("how is the weather").stdout  # 20 min: a task would be due, this row is not
+    r[-1]["ts"] -= 11 * 60
+    p.write_text("".join(json.dumps(x) + "\n" for x in r))
+    assert "CHECKUP DUE" in env.prompt("how is the weather").stdout
+
+
 def test_a_legacy_priority_item_alone_does_not_hold_the_stop_as_a_task(env):
     strict(env)
     env.bind()

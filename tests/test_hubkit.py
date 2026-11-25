@@ -1554,13 +1554,6 @@ def test_a_40_hex_head_survives_storage_and_unchanged_head_is_not_a_move(env):
     assert "head moved 5881060 -> 8481ff7" in env.run("tick", "--no-notify").stdout
 
 
-def test_a_bare_40_hex_sha_is_kept_everywhere_and_secrets_are_still_redacted():
-    from hubcore.redact import redact_obj
-    assert redact_obj({"heads": {"u": SHA_A}, "head_moved": {"old": SHA_A, "new": SHA_B}}) == {"heads": {"u": SHA_A}, "head_moved": {"old": SHA_A, "new": SHA_B}}
-    assert redact_obj({"note": SHA_A})["note"] == SHA_A
-    assert "REDACTED" in redact_obj({"heads": {"u": "ghp_" + "a1" * 15}})["heads"]["u"]
-
-
 def test_a_mangled_stored_baseline_is_rebaselined_not_called_a_move(env):
     fake_gh(env, head=SHA_A)
     env.bind()
@@ -1727,7 +1720,18 @@ def test_doctor_does_not_call_a_stored_sha_a_secret_but_still_finds_secrets(env)
     (env.state / "archive" / "a.jsonl").write_text(json.dumps(row) + "\n")
     assert "secret-shaped strings in state (count only): 0" in env.run("doctor").stdout
     (env.state / "archive" / "a.jsonl").write_text(json.dumps({"note": SHA_A + " and ghp_" + "a1" * 15}) + "\n")
+    assert "secret-shaped strings in state (count only): 2" in env.run("doctor").stdout  # the token and the bare id outside a head field
+    (env.state / "archive" / "a.jsonl").write_text(json.dumps({"note": SHA_A}) + "\n")  # a bare 40-hex id outside a head field counts
     assert "secret-shaped strings in state (count only): 1" in env.run("doctor").stdout
+
+
+def test_sha_is_kept_only_under_head_fields_and_secrets_are_still_redacted():
+    from hubcore.redact import redact_obj
+
+    assert redact_obj({"heads": {"u": SHA_A}, "head_moved": {"old": SHA_A, "new": SHA_B}}) == {"heads": {"u": SHA_A}, "head_moved": {"old": SHA_A, "new": SHA_B}}
+    assert "REDACTED" in redact_obj({"note": SHA_A})["note"]
+    assert "REDACTED" in redact_obj({"heads": {"u": "ghp_" + "a1" * 15}})["heads"]["u"]
+    assert SHA_A not in redact_obj({"note": f"commit {SHA_A} broke it", "list": [SHA_B]})["note"]
 
 
 # ---- 18. who counts as the author; handovers are not reviews; ETA names the open PR (real 40-hex heads) ----

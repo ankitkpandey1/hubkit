@@ -196,5 +196,5 @@ def test_the_status_block_lists_asks_with_the_due_one_first(env, tmp_path):
     ingest(env, tmp_path, [ask("501", "dana")])
     tick(env)
     block = env.run("status").stdout
-    assert "reply W1 dana" in block and "ANSWER DUE NOW" in block
+    assert "reply W1 REVIEW ASK dana" in block and "ANSWER DUE NOW" in block
     assert data

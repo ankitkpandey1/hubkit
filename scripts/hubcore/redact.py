@@ -29,15 +29,16 @@ PATTERNS = [
 QUOTE_MAX = 300
 LONG_RUN = re.compile(r"(?<![A-Za-z0-9+])(?=[A-Za-z0-9+]*\d)(?=[A-Za-z0-9+]*[A-Za-z])[A-Za-z0-9+]{32,}")
 COMMIT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{32})")
+SHA_KEYS = frozenset({"head", "heads", "old", "new", "commit", "oid", "verdict_acked"})  # fields that hold a public commit id
 MARK = "[REDACTED]"
 
 
-def _spans(text: str) -> list[tuple[int, int]]:
-    """Every secret-shaped span of `text`, overlapping or touching spans merged."""
+def _spans(text: str, keep_ids: bool = True) -> list[tuple[int, int]]:
+    """Every secret-shaped span of `text`, overlapping or touching spans merged. `keep_ids`: a bare 40/32-hex id is not one."""
     found = [m.span() for pat in PATTERNS for m in pat.finditer(text)]
     # A long run is a secret unless it is pure lowercase hex of exactly 40 (git commit id) or 32 (md5 / uuid
     # without dashes) characters: those are ids people quote in prose. Mixed-case, base64-like or longer runs stay masked.
-    found += [m.span() for m in LONG_RUN.finditer(text) if not COMMIT_ID.fullmatch(m.group())]
+    found += [m.span() for m in LONG_RUN.finditer(text) if not (keep_ids and COMMIT_ID.fullmatch(m.group()))]
     merged: list[tuple[int, int]] = []
     for lo, hi in sorted(found):
         if merged and lo <= merged[-1][1]:
@@ -47,14 +48,14 @@ def _spans(text: str) -> list[tuple[int, int]]:
     return merged
 
 
-def redact(text: str) -> tuple[str, int]:
+def redact(text: str, keep_ids: bool = True) -> tuple[str, int]:
     """Return (text, hits): each secret-shaped span is replaced in place by `[REDACTED]`, the text around it is kept.
 
     A key=value secret is matched by whole key name or key segment (`token`, `api_token`, `AUTH_TOKEN`, `x-auth-token`),
     never by a longer word that merely contains one (`author`, `tokenizer`). A long alphanumeric run (32+ chars with a
     digit and a letter) is masked unless it is pure lowercase hex of exactly 40 characters (a git commit id) or 32
     (a dashless uuid / md5): those ids are kept so quotes and notes stay readable."""
-    spans = _spans(text)
+    spans = _spans(text, keep_ids)
     if not spans:
         return text, 0
     out: list[str] = []
@@ -66,14 +67,17 @@ def redact(text: str) -> tuple[str, int]:
     return "".join(out), len(spans)
 
 
-def redact_obj[T](obj: T, limit: int = QUOTE_MAX * 2) -> T:
-    """Redact every string in a JSON-like structure (in place, see `redact`); cap string length."""
+def redact_obj[T](obj: T, limit: int = QUOTE_MAX * 2, sha_ok: bool = False) -> T:
+    """Redact every string in a JSON-like structure (in place, see `redact`); cap string length.
+
+    A 40-hex git id (or 32-hex md5) is kept only when it sits under a head/commit field (`SHA_KEYS`): it is a public
+    commit id there, and redacting it breaks the head comparison. Anywhere else in stored state it is masked."""
     if isinstance(obj, str):
-        return cast(T, redact(obj)[0][:limit])
+        return cast(T, redact(obj, keep_ids=sha_ok)[0][:limit])
     if isinstance(obj, dict):
-        return cast(T, {k: redact_obj(v, limit) for k, v in obj.items()})
+        return cast(T, {k: redact_obj(v, limit, sha_ok or k in SHA_KEYS) for k, v in obj.items()})
     if isinstance(obj, list):
-        return cast(T, [redact_obj(v, limit) for v in obj])
+        return cast(T, [redact_obj(v, limit, sha_ok) for v in obj])
     return obj
 
 
@@ -82,14 +86,14 @@ def count_hits(text: str) -> int:
     return redact(text)[1]
 
 
-def count_hits_obj(obj: object) -> int:
-    """count_hits over a parsed row."""
+def count_hits_obj(obj: object, sha_ok: bool = False) -> int:
+    """count_hits over a parsed row, with the same head-field exemption as redact_obj."""
     if isinstance(obj, str):
-        return count_hits(obj)
+        return redact(obj, keep_ids=sha_ok)[1]
     if isinstance(obj, dict):
-        return sum(count_hits_obj(v) for v in obj.values())
+        return sum(count_hits_obj(v, sha_ok or k in SHA_KEYS) for k, v in obj.items())
     if isinstance(obj, list):
-        return sum(count_hits_obj(v) for v in obj)
+        return sum(count_hits_obj(v, sha_ok) for v in obj)
     return 0
 
 

@@ -53,7 +53,8 @@ def ingest(cfg: dict, text: str, only_review: bool = False) -> list[str]:
             have.add(m[1])
             fresh.append(item)
             opened.append(f"{item['id']} reply owed to {m[2]}: {item['title'][:60]}")
-        status.work_save(sd, items)
+        if fresh:  # a scan that finds nothing new writes nothing: a read-only tick must not create work.json
+            status.work_save(sd, items)
     from . import standrules, threads
 
     for i in fresh:  # an ask that names a PR joins the thread of the work on it
