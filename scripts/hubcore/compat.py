@@ -107,6 +107,20 @@ def _win_parent(pid: int) -> int | None:
         k32.CloseHandle(snap)
 
 
+def cmdlines() -> list[list[str]]:
+    """The argument list of every running process (read from /proc, else `ps`)."""
+    out: list[list[str]] = []
+    if sys.platform != "win32" and Path("/proc/self/stat").exists():
+        for f in Path("/proc").glob("[0-9]*/cmdline"):
+            try:
+                out.append(f.read_bytes().decode("utf-8", errors="replace").rstrip("\0").split("\0"))
+            except OSError:
+                continue
+        return out
+    text = _ps("-eo", "args=")
+    return [ln.split() for ln in (text or "").splitlines()]
+
+
 def parent_pid(pid: int) -> int | None:
     """Parent of a process, or None when unknown."""
     if sys.platform == "win32":

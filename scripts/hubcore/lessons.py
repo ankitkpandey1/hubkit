@@ -388,6 +388,23 @@ BANNED_CMD = re.compile(
 YES_WORD = re.compile(
     r"(?i)\b(yes|yep|go|go ahead|send it|post it|approved?|ok|okay|do it|ship it)\b"
 )
+GH_LIST_API = re.compile(r"\bgh\s+api\b([^\n;&|]*)")
+GH_LIST_PATH = re.compile(r"/(?:reviews|comments|pulls|issues|commits|files|requested_reviewers)(?:[\s?'\"]|$)|per_page")
+
+
+def pagination_warning(command: str) -> str | None:
+    """A warning for `gh api` on a list endpoint without --paginate: page one only made false 'absent' claims. Never denies."""
+    m = GH_LIST_API.search(command)
+    if not m or "--paginate" in m[1] or not GH_LIST_PATH.search(m[1]):
+        return None
+    if re.search(r"(?:-X|--method)\s+(?!GET\b)\w+|\s(?:-f|-F|--field|--raw-field|--input)\b", m[1]):
+        return None
+    return (
+        "hubkit WARNING: `gh api` on a list endpoint without --paginate returns page one only; an item on a later page looks absent. "
+        "NEXT: add --paginate (and --slurp if you need one array) before claiming anything is absent"
+    )
+
+
 STOP_WORD = re.compile(r"(?i)\b(kill|stop|cancel|abort|terminate)\b")
 
 
@@ -410,7 +427,10 @@ def tool_warning(
             "NEXT: let it finish and harvest the result, or SendMessage it to redirect; stop it only on the user's word"
         )
     if tool == "AskUserQuestion":
-        return card_warning(tool_input)
+        from . import claims
+
+        asked = claims.never_ask(cfg, "\n".join(str(q.get("question", "")) for q in tool_input.get("questions") or []))
+        return card_warning(tool_input) or (f"hubkit WARNING: this card asks him {asked!r}. Starting or stopping a box is the hub's job, not his decision. NEXT: do it and report" if asked else None)
     from . import guardwatch
 
     if w := guardwatch.warning(cfg, tool, tool_input, now):
@@ -424,6 +444,12 @@ def tool_warning(
         return again
     if m := BANNED_CMD.search(command):
         return f"hubkit WARNING: {m[0].strip()!r} is a banned command. NEXT: use the safe form (revert with a new commit, remove one named file, send a normal push) or ask the user"
+    if warn := pagination_warning(command):
+        return warn
+    from . import claims
+
+    if warn := claims.batch_warning(cfg, command):
+        return warn
     if POST_CMD.search(command) and not guardwatch.typed_yes(cfg, YES_WORD, 600, now):
         return (
             "hubkit WARNING: posting to a person or a thread with no typed yes from the user in the last 10 minutes. A message goes out on the user's word, "

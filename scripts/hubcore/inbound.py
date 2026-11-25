@@ -11,12 +11,29 @@ import re
 import time
 
 from . import replies, routed, status, store
+from .orders import PR_REF
 
+REVIEW = re.compile(r"(?i)\bre-?review\w*|\breview\w*")
+PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 LINE = re.compile(r"^\s*(\d+)\s·\s(.+?)\s·\s(.+?)\s·\s(.*)\s·\s(todo|reply)\s*$")
 
 
-def ingest(cfg: dict, text: str) -> list[str]:
-    """Open a reply item for each new line that asks for an answer. Returns one line per item opened."""
+def is_review_ask(text: str) -> bool:
+    """A review or re-review ask: a review word and a PR (URL or number), or a "re-review" word alone."""
+    m = REVIEW.search(text)
+    if not m:
+        return False
+    return bool(re.match(r"(?i)re-?review", m[0])) or bool(PR_URL.search(text) or PR_REF.search(text))
+
+
+def scan_stored(cfg: dict) -> list[str]:
+    """Review asks in the inbox watcher's output already stored in the state dir (`mep_watch*.out`). It reads no inbox."""
+    text = "\n".join(f.read_text(encoding="utf-8", errors="replace") for f in sorted(store.state(cfg).glob("mep_watch*.out")))
+    return ingest(cfg, text, only_review=True)
+
+
+def ingest(cfg: dict, text: str, only_review: bool = False) -> list[str]:
+    """Open a reply item for each new line that asks for an answer (a review ask is flagged and titled so). Returns one line per item opened."""
     sd = store.state(cfg)
     opened = []
     fresh: list[dict] = []
@@ -25,11 +42,13 @@ def ingest(cfg: dict, text: str) -> list[str]:
         have = {i.get("msg_id") for i in items if i.get("kind") == "reply"}
         have |= {r.get("msg_id") for f in (sd / "archive").glob("archive_*.jsonl") for r in store.read_rows(f)[0]}
         for ln in text.splitlines():
-            m = LINE.match(ln)
-            if not m or m[1] in have:
+            if not (m := LINE.match(ln)):
                 continue
-            item: dict = {"id": status.next_work_id(sd, items), "kind": "reply", "owner": m[2], "title": m[4][:120], "note": m[3][:80],
-                    "added": time.time(), "msg_id": m[1], "prs": routed.refs(cfg, m[4])}
+            review = is_review_ask(m[4])
+            if m[1] in have or (only_review and not review):
+                continue
+            item: dict = {"id": status.next_work_id(sd, items), "kind": "reply", "owner": m[2], "title": ("REVIEW ASK: " if review else "") + m[4][:120], "note": m[3][:80],
+                    "added": time.time(), "msg_id": m[1], "prs": routed.refs(cfg, m[4]), "review_ask": review}
             items.append(item)
             have.add(m[1])
             fresh.append(item)

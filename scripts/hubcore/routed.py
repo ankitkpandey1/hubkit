@@ -847,7 +847,7 @@ def limit(cfg: dict, item: dict) -> float:
 
 def overdue(cfg: dict, item: dict, now: float) -> int | None:
     """Minutes since the ask when a review passes its hard limit (hearing from the owner does not stop it)."""
-    age = int((now - started_at(cfg, item)) / 60)
+    age = int(store.awake_min(cfg, started_at(cfg, item), now))
     hard = float(opts(cfg)["review_overdue_min"])
     if item.get("estimate_min") is not None and not item.get("estimate_defaulted"):
         hard = max(
@@ -856,10 +856,20 @@ def overdue(cfg: dict, item: dict, now: float) -> int | None:
     return age if item.get("review") and age > hard else None
 
 
+def eta_holds(cfg: dict, item: dict, now: float) -> bool:
+    """The owner's stated ETA (a work estimate the hook did not default) has not passed: silence is not a stall yet."""
+    est = item.get("estimate_min")
+    if est is None or item.get("estimate_defaulted") or item.get("reported"):
+        return False
+    return store.awake_min(cfg, started_at(cfg, item), now) < float(est)
+
+
 def level(cfg: dict, item: dict, now: float) -> int | None:
-    """Ladder step by silence: 0 past 1x the limit, 1 past 2x, 2 past 3x; None while within the limit."""
+    """Ladder step by silence: 0 past 1x the limit, 1 past 2x, 2 past 3x; None while within the limit or the ETA."""
+    if eta_holds(cfg, item, now):
+        return None
     lim = limit(cfg, item)
-    idle = (now - base(cfg, item)) / 60
+    idle = store.awake_min(cfg, base(cfg, item), now)
     return None if idle <= lim else min(int(idle // lim) - 1, 2)
 
 
@@ -944,7 +954,7 @@ def _why(cfg: dict, item: dict, now: float) -> str:
     if item.get("verdict_old_head"):
         return "the review landed on an old head"
     late = overdue(cfg, item, now)
-    idle = int((now - base(cfg, item)) / 60)
+    idle = int(store.awake_min(cfg, base(cfg, item), now))
     if late is not None:
         return f"review asked {late} min ago, past the hard limit of {opts(cfg)['review_overdue_min']} min"
     return f"nothing for {idle} min (limit {int(limit(cfg, item))})"

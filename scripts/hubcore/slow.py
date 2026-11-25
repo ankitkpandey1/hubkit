@@ -167,7 +167,7 @@ def holder_session(cfg: dict, owner: str) -> dict | None:
             s = json.loads(Path(f).read_text(encoding="utf-8"))
         except OSError, ValueError:
             continue
-        if s.get("name") == owner and hooks.proc_start(int(s.get("pid", 0))) == str(
+        if store.norm_name(s.get("name")) == store.norm_name(owner) and hooks.proc_start(int(s.get("pid", 0))) == str(
             s.get("procStart")
         ):
             return s
@@ -326,7 +326,7 @@ def _owner_job(cfg: dict, item: dict, hist: dict, now: float, live_ids: set[str]
         "basis": basis,
         "holder": "hub" if on_hub else item["owner"],
         "done": False,
-        "over": item.get("blocked_on") not in live_ids and now > thresh and (now - clock) > float(cfg["slow"]["floor_min"]) * 60,
+        "over": item.get("blocked_on") not in live_ids and now > thresh and store.awake_min(cfg, clock, now) > max(float(cfg["slow"]["floor_min"]), (thresh - clock) / 60),
         "gate": explicit,
         "owner": item["owner"],
     }
@@ -375,7 +375,7 @@ def _order_job(
         "basis": basis,
         "holder": holder,
         "done": False,
-        "over": now > thresh and not _addressed_after(link, thresh),
+        "over": now > thresh and store.awake_min(cfg, o["opened"], now) > est and not _addressed_after(link, thresh),
         "gate": explicit,
         "owner": holder,
     }

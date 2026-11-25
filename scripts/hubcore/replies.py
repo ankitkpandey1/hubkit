@@ -145,7 +145,7 @@ def ls_lines(cfg: dict, now: float) -> list[str]:
 def block_lines(work: list[dict], now: float) -> list[str]:
     """Status-block lines for open asks from people: at most 4, answers due first."""
     mine = sorted((i for i in work if i.get("kind") == "reply"), key=lambda i: (not i.get("due"), i["added"]))
-    out = [f"reply {i['id']} {i['owner']} ({i.get('note', '')}) {int((now - i['added']) / 60)}m: "
+    out = [f"reply {i['id']} {'REVIEW ASK ' if i.get('review_ask') else ''}{i['owner']} ({i.get('note', '')}) {int((now - i['added']) / 60)}m: "
            + ("ANSWER DUE NOW, " + "; ".join(f"#{routed.pr_num(u)} {s}" for u, s in (i.get("pr_states") or {}).items()) if i.get("due") else "owed")
            for i in mine[:4]]
     return out + ([f"reply: {len(mine) - 4} more asks owed; run hubkit inbound ls"] if len(mine) > 4 else [])

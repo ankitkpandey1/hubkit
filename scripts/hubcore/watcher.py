@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 
-from . import hooks, routed, slow, store
+from . import hooks, logwatch, routed, slow, store
 from .orders import Orders
 
 USER_KEYS = ("hub:", "peer:")  # alerts that go to the user's desktop when no notify_cmd is configured
@@ -91,7 +91,7 @@ def checks(cfg: dict, orders: Orders, now: float) -> list[dict]:
     """Every watcher alert that holds now."""
     from . import tasks
 
-    return [*tasks.alerts(cfg, now), *hub_checks(cfg, orders, now), *peer_checks(cfg, now), *liveness_checks(cfg, orders), *stale_agent_checks(cfg, now)]
+    return [*tasks.alerts(cfg, now), *hub_checks(cfg, orders, now), *peer_checks(cfg, now), *liveness_checks(cfg, orders), *stale_agent_checks(cfg, now), *logwatch.checks(cfg, orders)]
 
 
 def stale_agent_checks(cfg: dict, now: float) -> list[dict]:

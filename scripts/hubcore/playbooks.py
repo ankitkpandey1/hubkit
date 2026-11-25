@@ -66,7 +66,17 @@ def match(text: str) -> list[dict]:
     return [pb for pb in load_all() if any(_hits(t, text) for t in pb["triggers"])]
 
 
-def save(name: str, triggers: list[str], steps: str, quotes: list[str], replace: bool = False) -> str:
+ACT_STEP = re.compile(r"(?i)\b(?:gh pr merge|release\.py|--go\b|merge (?:the|it|#)|deploy|ship)")
+NO_ACT = re.compile(r"(?i)\b(?:no|not|never|don'?t|do not|stop|without|unless|only)\b")
+ACT_QUOTE = re.compile(r"(?i)\b(?:merge|release|deploy|ship)")
+
+
+def acting_steps(steps: str) -> list[str]:
+    """Step lines that tell the hub to merge, release or deploy (a line that forbids or conditions it does not count)."""
+    return [ln.strip() for ln in steps.splitlines() if ACT_STEP.search(ln) and not NO_ACT.search(ln)]
+
+
+def save(name: str, triggers: list[str], steps: str, quotes: list[str], replace: bool = False, steps_mtime: float | None = None) -> str:
     """Write a playbook. An existing one is replaced only with `replace`, and the old file is kept as `.md.bak-<date>`."""
     if not NAME.fullmatch(name):
         raise ValueError("playbook name must be kebab-case (a-z, 0-9, -)")
@@ -77,9 +87,18 @@ def save(name: str, triggers: list[str], steps: str, quotes: list[str], replace:
             re.compile(t[3:])
     path = pdir() / f"{name}.md"
     day = time.strftime("%Y-%m-%d")
+    if acting_steps(steps) and not any(ACT_QUOTE.search(q) for q in quotes):
+        raise ValueError(f"playbook {name} tells the hub to merge, release or deploy ({acting_steps(steps)[0][:60]!r}) but no --quote of his words names that act. "
+                         "A playbook may only do what his own words ordered; pass the quote, or make the step ask him")
     if path.exists():
         if not replace:
             raise ValueError(f"playbook {name} exists; pass --replace to overwrite (the old one is kept as {path.name}.bak-{day})")
+        old = _parse(path)
+        if old["steps"].strip() == steps.strip() and set(old["triggers"]) == set(triggers):
+            raise ValueError(f"playbook {name}: the steps are identical to the stored version, so nothing would change. Your write of the steps file probably failed "
+                             "(a shell with noclobber refuses `>` on an existing file; use `>|`). Check the file, then save again")
+        if steps_mtime is not None and steps_mtime < path.stat().st_mtime:
+            raise ValueError(f"playbook {name}: the steps file is older than the stored playbook, so it was not rewritten for this change (noclobber? use `>|`)")
         path.replace(path.with_name(f"{path.name}.bak-{day}"))
     pdir().mkdir(parents=True, exist_ok=True)
     _write(path, {"name": name, "triggers": triggers, "updated": day, "quotes": quotes, "steps": steps})

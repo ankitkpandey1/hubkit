@@ -170,7 +170,39 @@ def safe(text: str, n: int = 300) -> str:
     return redact(text)[0][:n]
 
 
+def norm_name(name: object) -> str:
+    """A session or owner name without its trailing "[ref]" suffix, lower case: "peer-a [x1]" and "peer-a" are one peer."""
+    return re.sub(r"\s*\[[^\]]*\]\s*$", "", str(name or "")).strip().lower()
+
+
+GAP_MIN = 30  # no heartbeat for this long = the machine was asleep or off, and no stall clock counts it
+
+
+def _note_gap(sd: Path, now: float) -> None:
+    """Before a heartbeat: when every heartbeat is older than GAP_MIN, record the quiet spell in gaps.jsonl."""
+    last = max((f.stat().st_mtime for f in (sd / "seen").glob("*")), default=None)
+    if last is not None and now - last > GAP_MIN * 60:
+        append_row(sd / "gaps.jsonl", {"start": last, "end": now})
+        rows = read_rows(sd / "gaps.jsonl")[0]
+        if len(rows) > 400:
+            write_atomic(sd / "gaps.jsonl", "".join(json.dumps(r) + "\n" for r in rows[-200:]))
+
+
 def touch_seen(sd: Path, name: str) -> None:
-    """Touch a heartbeat file under seen/."""
+    """Touch a heartbeat file under seen/. A long silence before it is recorded as a gap."""
     (sd / "seen").mkdir(exist_ok=True)
+    try:
+        _note_gap(sd, time.time())
+    except (OSError, ValueError):
+        pass  # a gap that cannot be recorded must not stop the heartbeat
     (sd / "seen" / name).touch()
+
+
+def awake_min(cfg: dict, t0: float, t1: float) -> float:
+    """Minutes from t0 to t1 minus the time the machine was off (gaps.jsonl). Stall clocks use this, not the wall clock."""
+    try:
+        gaps = read_rows(state(cfg, create=False) / "gaps.jsonl")[0]
+    except (OSError, StateError):
+        gaps = []
+    off = sum(max(0.0, min(t1, float(g["end"])) - max(t0, float(g["start"]))) for g in gaps if "start" in g and "end" in g)
+    return (t1 - t0 - off) / 60
