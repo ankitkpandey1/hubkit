@@ -677,6 +677,7 @@ REVERTS = [
     ('task: leads the status block', 'hubcore/status.py', '        out += tasks.block_lines(cfg, [i for i in st["work"] if i.get("task")], now)\n', '', 'tests/test_tasks.py::test_a_task_leads_the_status_block_before_other_priority_items'),
     ('task: the lists put tasks first', 'hubcore/tasks.py', 'sorted(rows, key=lambda r: r["state"] != NOWORKER)', 'list(rows)', 'tests/test_tasks.py::test_the_task_list_puts_no_worker_first_and_done_restarts_their_clock'),
     ('task: a task prompt opens no order', 'hubcore/hooks.py', 'intake = [] if opened or his_words else hook_intake(orders, text)', 'intake = hook_intake(orders, text)', 'tests/test_tasks.py::test_tasks_that_name_a_merge_or_a_deploy_authorise_neither'),
+    ('task: quoted words are a mention', 'hubcore/tasks.py', '    body = _mask(text).strip()  # quoted text ("mark W1 finished") is a mention, not his word', '    body = text.strip()', 'tests/test_tasks.py::test_quoted_words_close_and_hold_nothing'),
 ]
 
 

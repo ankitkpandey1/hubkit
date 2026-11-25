@@ -10,7 +10,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - Stop-gate check `task`: while a task is open the turn may end only if each has a live worker inside its ETA, an `ask` item naming it, or a named blocker (`hubkit work block ID --on .. --fix .. --holder ..`), and a watch runs; the same reason blocks at most twice per turn. The user's "stop" holds every open task and says so; "stop W5" or "pause the login bug" holds that one; "resume" frees them.
 - Fast track means first in every list, a shorter clock, an earlier re-brief and never queued behind other work; it never bypasses a guard, a permission prompt, a denial or any deploy, merge or message rule. New `[tasks]` keys.
 
-## [0.4.1] - 2026-11-12## [0.4.1] - 2026-11-12
+## [0.4.1] - 2026-11-12
 
 First release since 0.2.4; versions 0.3.0 and 0.4.0 were not published separately. This one holds both: the new trackers and checks, and the lifecycle table with the agent-friendly CLI.
 

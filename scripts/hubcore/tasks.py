@@ -310,7 +310,7 @@ def task_words(cfg: dict, text: str, now: float) -> list[str]:
     """What his typed words do to open tasks: "stop"/"halt"/"pause the tasks" holds them, "resume" releases them, and
     "mark X finished" / "X is done" closes the one task X names. A question or an ambiguous name closes nothing."""
     quote = " ".join(text.split())[:160]
-    body = text.strip()
+    body = _mask(text).strip()  # quoted text ("mark W1 finished") is a mention, not his word
     if HOLD.match(body):
         ids = [i["id"] for i in open_tasks(cfg)]
         if not ids:
@@ -639,23 +639,6 @@ def task_due_lines(cfg: dict, now: float) -> list[str]:
         f"hubkit TASK CHECK DUE: {len(due)} task(s) past their check interval: {names}. NEXT: hubkit tasks (tasks first), SendMessage each worker that is "
         "not within its ETA for a one-line state and an ETA (re-brief at once after one missed nudge; hubkit never sends), then: hubkit tasks done"
     ]
-
-
-def task_alerts(cfg: dict, now: float) -> list[dict]:
-    """Watchdog: one alert per task whose check is due; the key moves with each check, so each interval alerts again."""
-    return [
-        {
-            "key": f"{r['id']}:task_check:{int(float(r['task_item'].get('checked') or r['task_item']['added']))}",
-            "msg": (
-                f"hubkit TASK CHECK DUE {r['id']} ({r['item']}): {int(interval_of(cfg, r['task_item']))} min since the last check; {r['state']}: {r['why']}. "
-                f"NEXT: hubkit tasks, nudge or re-brief its worker, then: hubkit tasks done"
-            ),
-        }
-        for r in task_rows(cfg, now)
-        if task_due(cfg, r["task_item"], now)
-    ]
-
-
 
 
 # ---- the check interval ----

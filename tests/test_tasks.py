@@ -609,3 +609,31 @@ def test_a_criterion_the_hub_wrote_is_marked_as_not_his(env):
     env.run("work", "criterion", "W1", "--done-when", "the report exists")
     out = env.run("status").stdout
     assert "the report exists [written by the hub" in out and "the page is live [written" not in out
+
+
+QUOTED = [
+    'I might later say "stop" if it goes wrong',
+    'I might later say "mark W1 finished" once it is merged',
+    'if I type "W1 is done" then close it',
+    'the word "finish W1" is a trigger',
+    'I could write "W1 done" later',
+    'later I will say "stop W1" for one of them',
+    'say "pause the login bug" to hold one',
+]
+
+
+@pytest.mark.parametrize("text", QUOTED)
+def test_quoted_words_close_and_hold_nothing(env, text):
+    strict(env)
+    give(env, "tasks: 1. fix the login bug 2. update the docs")
+    env.prompt(text)
+    assert len(tasks(env)) == 2 and not any(i.get("held") for i in tasks(env))
+
+
+@pytest.mark.parametrize("text", ['I might say "resume" later', 'say "resume W1" when ready'])
+def test_quoted_resume_frees_nothing(env, text):
+    strict(env)
+    give(env, "tasks: 1. fix the login bug 2. update the docs")
+    env.prompt("stop")
+    env.prompt(text)
+    assert all(i.get("held") for i in tasks(env))
