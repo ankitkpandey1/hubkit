@@ -17,6 +17,21 @@ T = "tests/test_hubkit.py::"
 
 # (name, file, old, new, test)
 REVERTS = [
+    # 2026-11-16 mistakes (test_mistakes_1116.py)
+    ("log line needs a person: stop gate", "hubcore/gate.py", '    add("logwatch", logwatch.gate_lines(cfg, Orders(cfg)))', '    add("logwatch", [])', "tests/test_mistakes_1116.py::test_a_needs_a_person_log_line_alerts_at_once_and_holds_the_stop_gate_until_acked"),
+    ("log line needs a person: watcher", "hubcore/watcher.py", "*logwatch.checks(cfg, orders)", "*[]", "tests/test_mistakes_1116.py::test_a_needs_a_person_log_line_alerts_at_once_and_holds_the_stop_gate_until_acked"),
+    ("log: a run that went on clears it", "hubcore/logwatch.py", "                    hit = None\n", "                    pass\n", "tests/test_mistakes_1116.py::test_a_log_that_went_on_after_the_failure_raises_nothing"),
+    ("brief claims his authority", "hubcore/hooks.py", ", claims.authority_warning(cfg, brief)) if w)", ")) if w)", "tests/test_mistakes_1116.py::test_a_brief_that_says_this_is_his_go_without_his_words_is_warned"),
+    ("act without his order: held", "hubcore/gate.py", "    if r := claims.act_reason(acts):", "    if False:", "tests/test_mistakes_1116.py::test_an_agent_told_to_run_release_on_the_word_hotfix_holds_the_stop_gate"),
+    ("card answer is recorded", "hubcore/hooks.py", "    claims.record_answer(cfg, payload.get(\"tool_response\"))", "    pass", "tests/test_mistakes_1116.py::test_a_card_answer_naming_the_act_orders_it_and_a_refusal_or_a_question_does_not"),
+    ("pr claim needs a read", "hubcore/gate.py", "claims.unread_pr_claim(last, transcript), ", "", "tests/test_mistakes_1116.py::test_what_a_pr_does_is_held_without_a_gh_read_of_it_and_passes_with_one"),
+    ("future time", "hubcore/claims.py", "        if 5 < t - cur_min < 12 * 60:", "        if False:", "tests/test_mistakes_1116.py::test_a_past_event_at_a_later_clock_time_is_flagged"),
+    ("never ask him to start a box", "hubcore/gate.py", "    if ask := claims.never_ask(cfg, last):", "    if False:", "tests/test_mistakes_1116.py::test_asking_him_whether_to_start_a_box_is_warned_in_a_card_and_held_in_a_message"),
+    ("one PR to a batch recipient", "hubcore/lessons.py", "    if warn := claims.batch_warning(cfg, command):", "    if False:", "tests/test_mistakes_1116.py::test_a_dm_naming_one_pr_while_others_are_live_is_warned"),
+    ("session start: watcher line", "hubcore/hooks.py", "    if not gate.watch_live(cfg):\n        out.append", "    if False:\n        out.append", "tests/test_mistakes_1116.py::test_a_session_start_with_no_hubkit_watch_prints_a_blocking_next"),
+    ("playbook: identical steps", "hubcore/playbooks.py", "        if old[\"steps\"].strip() == steps.strip() and", "        if False and", "tests/test_mistakes_1116.py::test_replacing_a_playbook_with_identical_steps_fails_loudly"),
+    ("playbook: act needs a quote", "hubcore/playbooks.py", "    if acting_steps(steps) and not", "    if False and not", "tests/test_mistakes_1116.py::test_a_playbook_that_merges_or_deploys_needs_a_quote_of_his_naming_the_act"),
+    ("doctor: auto_open", "hubcore/cli.py", "    if Orders(cfg).intents.get(\"intake\", {}).get(\"auto_open\", True):", "    if False:", "tests/test_mistakes_1116.py::test_doctor_warns_while_auto_open_is_on_and_not_when_it_is_off"),
     ("cross-session notices", "hubcore/store.py", '"[artifact", "[system", "[cross-session")', '"[artifact", "[system")', "test_cross_session_notices_never_open_orders"),
     ("harness and peer text filter", "hubcore/store.py", "    return not any(m in squashed for m in HARNESS_MARKERS)", "    return True", "test_peer_and_harness_text_never_open_orders"),
     ("whole-text marker scan and look-alike hyphens", "hubcore/store.py", "    return not any(m in squashed for m in HARNESS_MARKERS)", "    return not any(m in t[:400] for m in HARNESS_MARKERS)", "test_peer_marker_far_into_text_and_lookalike_hyphens_are_not_human"),
@@ -670,7 +685,7 @@ REVERTS = [
     ('task: hub-written criterion marked', 'hubcore/tasks.py', 't["done_when"], t["done_when_by"] = redact_obj({"c": text.strip()})["c"][:300], "hub"', 't["done_when"], t["done_when_by"] = redact_obj({"c": text.strip()})["c"][:300], "him"', 'tests/test_tasks.py::test_a_criterion_the_hub_wrote_is_marked_as_not_his'),
     ('task: intake opens items', 'hubcore/hooks.py', 'opened = [] if his_words else tasks.task_intake(cfg, text, now)', 'opened = []', 'tests/test_tasks.py::test_a_tasks_prompt_opens_one_priority_item_per_task_and_leads'),
     ('task: watch alerts when due', 'hubcore/watcher.py', 'return [*tasks.alerts(cfg, now), *hub_checks', 'return [*hub_checks', 'tests/test_tasks.py::test_the_watch_exits_with_the_alert_when_a_task_check_is_due'),
-    ('task: interval default', 'hubcore/tasks.py', 'return float(_override(cfg).get("interval_min") or cfg["tasks"]["interval_min"])', 'return 30.0', 'tests/test_tasks.py::test_a_task_check_is_due_at_the_default_15_minutes_and_the_tick_alerts'),
+    ('task: interval default', 'hubcore/tasks.py', 'return float(_override(cfg).get("interval_min") or _legacy_override(cfg).get("task_interval_min") or cfg["tasks"]["interval_min"])', 'return 30.0', 'tests/test_tasks.py::test_a_task_check_is_due_at_the_default_15_minutes_and_the_tick_alerts'),
     ('task: interval override', 'hubcore/tasks.py', '_override(cfg).get("interval_min") or ', '', 'tests/test_tasks.py::test_checkup_interval_sets_the_task_clock_and_config_sets_its_default'),
     ('task: stop gate counts tasks', 'hubcore/tasks.py', 'for t in open_ if (line := task_cover', 'for t in [] if (line := task_cover', 'tests/test_tasks.py::test_an_open_task_with_no_worker_blocks_the_stop'),
     ('task: stop gate loop limit', 'hubcore/tasks.py', 'if counts.get(key, 0) >= TASK_BLOCKS:', 'if False:', 'tests/test_tasks.py::test_the_gate_blocks_twice_for_the_same_reason_then_lets_the_turn_end_with_a_line'),
@@ -678,8 +693,13 @@ REVERTS = [
     ('task: the lists put tasks first', 'hubcore/tasks.py', 'sorted(rows, key=lambda r: r["state"] != NOWORKER)', 'list(rows)', 'tests/test_tasks.py::test_the_task_list_puts_no_worker_first_and_done_restarts_their_clock'),
     ('task: a task prompt opens no order', 'hubcore/hooks.py', 'intake = [] if opened or his_words else hook_intake(orders, text)', 'intake = hook_intake(orders, text)', 'tests/test_tasks.py::test_tasks_that_name_a_merge_or_a_deploy_authorise_neither'),
     ('task: quoted words are a mention', 'hubcore/tasks.py', '    body = _mask(text).strip()  # quoted text ("mark W1 finished") is a mention, not his word', '    body = text.strip()', 'tests/test_tasks.py::test_quoted_words_close_and_hold_nothing'),
-    ('task: single-quoted words are a mention', 'hubcore/tasks.py', '    r"|(?<![A-Za-z0-9])\'[^\'\\n]*\'(?![A-Za-z0-9])"  # \'quoted\'; an apostrophe (don\'t, Ankit\'s) is not a quote', '', 'tests/test_tasks.py::test_single_quoted_and_quoted_reply_words_do_nothing'),
+    ('task: single-quoted words are a mention', 'hubcore/tasks.py', '    r"|(?<![A-Za-z0-9])\'[^\'\\n]*\'(?![A-Za-z0-9])"  # \'quoted\'; an apostrophe (don\'t, Sam\'s) is not a quote', '', 'tests/test_tasks.py::test_single_quoted_and_quoted_reply_words_do_nothing'),
     ('task: quoted reply lines are a mention', 'hubcore/tasks.py', '    r"|(?m:^[ \\t]*(?:>|&gt;)[^\\n]*)",  # a quoted reply line', '    r"",', 'tests/test_tasks.py::test_single_quoted_and_quoted_reply_words_do_nothing'),
+    ('task: a negated finish closes nothing', 'hubcore/tasks.py', "\\b(?:not|never|cannot|\\w+n['\\u2019]t)\\b", "\\b(?:not|never|isn't|aren't|wasn't)\\b", 'tests/test_tasks.py::test_a_negated_finish_closes_nothing'),
+    ('status: regressed rules fold past three', 'hubcore/status.py', 'for c in reg[:3]]', 'for c in reg]', 'tests/test_learning_rules.py::test_many_regressed_classes_take_four_lines_of_the_status_block'),
+    ('priority: chat tool names come from config', 'hubcore/priority.py', '"|".join(map(re.escape, tool_words))', '"gmail|slack|chat"', 'tests/test_priority.py::test_a_read_through_a_chat_tool_named_in_config_is_an_inbox_read'),
+    ('status: replies before routed', 'hubcore/status.py', '        out += replies.block_lines(st["work"], now)  # before routed: a long routed list must not push a reply (a review ask) out of the capped block\n        out += routed.block_lines(cfg, st["work"], now)\n', '        out += routed.block_lines(cfg, st["work"], now)\n        out += replies.block_lines(st["work"], now)\n', 'tests/test_checkup.py::test_a_review_ask_stays_in_the_status_head_under_thirty_routed_lines'),
+    ('priority: zulip is a default chat tool', 'hubcore/config.py', '["gmail", "zulip", "slack", "chat"]', '["gmail", "slack", "chat"]', 'tests/test_priority.py::test_a_read_through_the_default_chat_tools_needs_no_config'),
 ]
 
 

@@ -163,6 +163,7 @@ def test_a_holder_that_is_visibly_working_does_not_stall_and_one_gone_quiet_does
     send(env, "peer-a", f"check {PR1}\nEstimate: 60m")
     age_routed(env, 20)
     assert stop(env) is None and "STALLED" not in tick(env, "--no-notify")
+    age_routed(env, 60)  # past its 60m ETA: from here only the holder state excuses it
     os.utime(tr, (time.time() - 600,) * 2)  # its transcript stopped growing
     assert "STALLED: peer-a" in stop(env)["reason"]
     os.utime(tr, (time.time(),) * 2)

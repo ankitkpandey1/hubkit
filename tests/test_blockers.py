@@ -98,7 +98,7 @@ def test_a_second_job_to_a_busy_owner_while_an_order_is_open_warns_of_the_queue(
     first = send(env, "peer-a", f"check {PR1}. Done-when: reviewed. " + LONG, "first")
     assert "queues behind" not in first.stdout
     second = send(env, "peer-a", "Start the smoke on https://github.com/acme/repo/pull/102. Done-when: smoke passes. " + LONG, "second")
-    assert "WARNING: peer-a already holds W1; W2 queues behind it" in second.stdout
+    assert "WARNING: peer-a already holds W2; W3 queues behind it" in second.stdout  # W1 is the priority item the "asap" in the order opened
     SECOND = "Start the smoke on https://github.com/acme/repo/pull/102. Done-when: smoke passes. " + LONG
     again = send(env, "peer-a", SECOND, "second")
     assert "queues behind" not in again.stdout  # the same job again is a refresh, not a new queue entry

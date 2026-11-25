@@ -202,6 +202,14 @@ def test_a_hand_opened_merge_order_naming_the_pr_silences_the_guard(env):
     assert "merging #7506" in pretool(env, "gh pr merge 7506")
 
 
+def test_gh_api_list_without_paginate_warns_and_paginate_is_silent(env):
+    env.bind()
+    for cmd in ("gh api repos/a/b/pulls/9/reviews", "gh api 'repos/a/b/pulls/9/files?per_page=100'", "gh api repos/a/b/issues/9/comments --jq length"):
+        assert "--paginate" in pretool(env, cmd), cmd
+    for cmd in ("gh api --paginate repos/a/b/pulls/9/reviews", "gh api repos/a/b/pulls/9/reviews --paginate", "gh api repos/a/b/pulls/9", "gh api -X PATCH repos/a/b/issues/9"):
+        assert "--paginate" not in pretool(env, cmd), cmd
+
+
 def test_a_status_line_that_uses_the_word_done_is_not_a_done_claim(env):
     env.bind()
     prompts(env, "do three things: fix the log, tidy the docs, and reply to the thread")

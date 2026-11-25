@@ -141,8 +141,7 @@ def test_the_same_task_given_twice_is_one_item(env):
     assert len(tasks(env)) == 1 and tasks(env)[0]["prompts"] == 2
 
 
-def test_tasks_that_name_a_merge_or_a_deploy_authorise_neither(env):
-    strict(env)
+def test_tasks_that_name_a_merge_or_a_deploy_authorise_neither(env):  # default intake: auto_open is on, so only the hook rule keeps orders closed
     out = give(env, "tasks: 1. merge PR 41 2. deploy to prod 3. message Sam")
     assert len(out) == 3 and not [o for o in env.rows("orders.jsonl") if o.get("op") == "open"]
     assert all("NOT an order" in i["note"] for i in out)
@@ -660,5 +659,32 @@ def test_single_quoted_and_quoted_reply_words_do_nothing(env, text):
 def test_apostrophes_are_not_quotes(env):
     strict(env)
     give(env, "tasks: 1. fix the login bug 2. update the docs")
-    env.prompt("stop W1, it's Ankit's call, don't ask")
+    env.prompt("stop W1, it's Sam's call, don't ask")
     assert any(i.get("held") for i in tasks(env))
+
+
+NEGATED = [
+    "don't mark W1 finished",
+    "please don\u2019t mark W1 finished yet",
+    "do not mark W1 finished",
+    "never mark W1 finished",
+    "W1 isn't done",
+    "W1 wasn't finished",
+    "you can't call W1 done",
+    "it doesn't mean W1 is done",
+]
+
+
+@pytest.mark.parametrize("text", NEGATED)
+def test_a_negated_finish_closes_nothing(env, text):
+    strict(env)
+    give(env, "tasks: 1. fix the login bug 2. update the docs")
+    env.prompt(text)
+    assert len(tasks(env)) == 2
+
+
+def test_the_plain_finish_still_closes_it(env):
+    strict(env)
+    give(env, "tasks: 1. fix the login bug 2. update the docs")
+    env.prompt("mark W1 finished")
+    assert [i["id"] for i in tasks(env)] == ["W2"]

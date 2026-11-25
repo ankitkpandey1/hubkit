@@ -1,3 +1,4 @@
+import datetime
 import json
 import os
 import shutil
@@ -24,6 +25,8 @@ TOKEN_SHAPES = [
     "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
 ]
 
+
+NOW_TS = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 def order_ids(env):
     return [r["id"] for r in env.rows("orders.jsonl") if r["op"] == "open"]
@@ -331,9 +334,9 @@ def test_movement_file_counts_as_movement(env, tmp_path):
 def test_hook_failures_found_by_transcript_scan(env):
     line = {"attachment": {"type": "hook_non_blocking_error", "hookEvent": "UserPromptSubmit",
                            "exitCode": 127, "command": "python3 /x/hubkit hook prompt"},
-            "timestamp": "2026-11-04T10:00:00.000Z"}
+            "timestamp": NOW_TS}
     other = {"attachment": {"type": "hook_non_blocking_error", "command": "bash other.sh"},
-             "timestamp": "2026-11-04T10:00:01.000Z"}
+             "timestamp": NOW_TS}
     (env.transcripts / "a.jsonl").write_text(json.dumps(line) + "\n" + json.dumps(other) + "\n")
     out = env.run("tick", "--no-notify").stdout
     assert "1 hubkit hook failures" in out
@@ -473,7 +476,7 @@ def test_session_start_compact_block(env):
     env.run("tick", "--no-notify")
     r = env.hook("session", {"session_id": "sess-hub", "source": "compact"})
     out = r.stdout
-    assert "priority: W1 ship the thing" in out and "active: W2 review lane" in out
+    assert "W2 ship the thing" in out and "active: W3 review lane" in out  # W1 is the priority item his "asap" opened
     assert "open orders: 1" in out and "kind" not in "" and "hotfix" in out
     assert "demo-class: do it right" in out
     assert len(out.splitlines()) < 30
@@ -1053,7 +1056,7 @@ def test_silent_owner_is_stalled_at_the_prompt_in_tick_and_at_turn_end(env):
     out = env.prompt("carry on").stdout
     assert out.splitlines()[0].startswith("hubkit STALLED:") and "peer-a" in out.splitlines()[0]
     assert "SendMessage peer-a" in out and "#101" in out and "20 min" in out
-    assert "hubkit STALLED: peer-a" in json.loads(env.hook("stop", {"session_id": "sess-hub", "last_assistant_message": "done"}).stdout)["reason"]
+    assert "hubkit STALLED: peer-a" in json.loads(env.hook("stop", {"session_id": "sess-hub", "last_assistant_message": "ok"}).stdout)["reason"]
     first = env.run("tick", "--no-notify").stdout
     assert "ALERT" in first and "peer-a" in first and "one-line state" in first
     assert env.run("tick", "--no-notify").stdout == ""  # back-off, not at once
@@ -1457,9 +1460,17 @@ def test_a_chased_item_neither_alerts_nor_wakes_the_watch_again(env):
     assert r.returncode == 3 and "ALERT" not in r.stdout
 
 
+def test_a_hook_error_older_than_the_window_does_not_alert(env):
+    old = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=7)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    (env.transcripts / "s.jsonl").write_text(json.dumps({"timestamp": old, "attachment": {"type": "hook_non_blocking_error", "command": "hubkit hook x"}}) + "\n")
+    assert "hook failures" not in env.run("tick", "--no-notify").stdout
+    (env.transcripts / "s.jsonl").write_text(json.dumps({"timestamp": NOW_TS, "attachment": {"type": "hook_non_blocking_error", "command": "hubkit hook x"}}) + "\n")
+    assert "hook failures" in env.run("tick", "--no-notify").stdout
+
+
 def test_our_own_stop_gate_block_is_not_counted_as_a_hook_failure(env):
     def att(msg):
-        return json.dumps({"timestamp": "2026-11-05T10:33:13.781Z", "attachment": {
+        return json.dumps({"timestamp": NOW_TS, "attachment": {
             "type": "hook_blocking_error", "hookEvent": "Stop", "command": "hubkit hook stop",
             "blockingError": {"blockingError": msg, "command": "hubkit"}}})
     (env.transcripts / "s.jsonl").write_text(att("hubkit STALLED: peer-a: W1 nothing for 6 min") + "\n")
@@ -1473,9 +1484,9 @@ def test_a_repeating_hook_error_count_is_one_alert_key(env):
     def att(ts):
         return json.dumps({"timestamp": ts, "attachment": {"type": "hook_non_blocking_error", "command": "hubkit hook x"}})
     f = env.transcripts / "s.jsonl"
-    f.write_text(att("2026-11-05T10:00:00.000Z") + "\n")
+    f.write_text(att(NOW_TS) + "\n")
     env.run("tick", "--no-notify")
-    f.write_text(att("2026-11-05T10:00:00.000Z") + "\n" + att("2026-11-05T10:00:00.000Z") + "\n")
+    f.write_text(att(NOW_TS) + "\n" + att(NOW_TS) + "\n")
     env.run("tick", "--no-notify")
     assert len([r for r in env.rows("alerts.jsonl") if r["key"].startswith("hook_errors")]) == 1
 

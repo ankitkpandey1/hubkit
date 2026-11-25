@@ -78,3 +78,14 @@ def test_a_regressed_class_leads_the_status_block_and_cannot_be_readdressed_with
     assert r.returncode == 2 and "regressed" in r.stderr and "--check" in r.stderr
     env.learn("promote", "reg-one", "--gate", "G1", "--rule", "A harder rule for reg-one.")
     assert env.learn("address", "--class", "reg-one", "--how", "reworded", "--date", today, "--check", "true").returncode == 0
+
+
+def test_many_regressed_classes_take_four_lines_of_the_status_block(env):
+    env.bind()
+    today = time.strftime("%Y-%m-%d", time.gmtime(time.time() + 86400))
+    for n in range(6):
+        assert addressed(env, f"reg-{n}", check="true").returncode == 0
+        env.learn("add", "--class", f"reg-{n}", "--gate", "G1", "--quote", "again", "--date", today)
+    env.run("tick", "--no-notify")
+    out = env.run("status").stdout
+    assert out.count("hubkit REGRESSED") == 4 and "3 more rules did not hold" in out
