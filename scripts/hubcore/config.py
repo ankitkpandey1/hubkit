@@ -33,17 +33,20 @@ DEFAULTS: dict = {
         "activity_globs": [
             "~/.claude/projects/*/*/subagents/agent-{id}.jsonl",
             "/tmp/claude-*/*/*/tasks/{id}.output",
-        ], "reviewer_logins": [], "review_words": ["review"], "review_stall_min": 5, "review_overdue_min": 10,
+        ], "reviewer_logins": [], "batch_to": [], "review_words": ["review"], "review_stall_min": 5, "review_overdue_min": 10,
                "done_when_markers": ["Done-when:", "Done when:"], "require_done_when": "warn"},
     "requests": {"stall_min": 60, "overdue_min": 120, "floor_min": 10, "overdue_factor": 2.0, "similarity": 0.6, "max_open": 20, "title_chars": 120, "block_lines": 5,
                  "text_chars": 600, "max_parts": 8, "false_min": 3, "false_ratio": 0.5, "window_days": 14},
     "tasks": {"interval_min": 15, "eta_default_min": 30},  # tasks the user gives: check interval and the default worker ETA (minutes)
     "slow": {"min_samples": 3, "order_default_min": 30, "floor_min": 2, "tool_min": 2, "scan_kb": 2048},
-    "watcher": {"stale_agent_min": 30, "reply_owed_min": 60, "reply_floor_min": 10, "reply_min_samples": 3, "verify_stale_min": 180, "stuck_min": 30, "unhandled_min": 10, "waiting_min": 3, "active_s": 120, "watch_grace_min": 5, "notify_user": True},
+    "watcher": {"stale_agent_min": 30, "reply_owed_min": 60, "reply_floor_min": 10, "reply_min_samples": 3, "verify_stale_min": 180, "stuck_min": 30, "unhandled_min": 10, "waiting_min": 3, "active_s": 120, "watch_grace_min": 5, "notify_user": True, "log_globs": [], "log_max_age_h": 24},
+    "checkup": {"interval_min": 30, "task_interval_min": 15, "task_eta_default_min": 30},  # legacy keys of the installed hub; [tasks] wins
+    "priority": {"inbox_tools": ["gmail", "zulip", "slack", "chat"]},  # name parts of mcp tools that read chat or mail
     "mep": {"enabled": True, "timeout_s": 30},
-    "watchdog": {"transcript_scan_hours": 24, "cron_stale_min": 15},
+    "watchdog": {"transcript_scan_hours": 24, "hook_error_window_h": 6, "cron_stale_min": 15},
     "think": {"decisions": ""},  # path of the active slug's decisions.md; its last lines go in the status block
     "stop_guard": {"phrases": ["waits for your go", "say go", "want me to", "shall i"]},
+    "ask_guard": {"patterns": [r"(?i)\b(?:start|stop|boot|power (?:on|off))\b[^?\n]{0,40}\b(?:box|server|machine|host|instance)\b"], "names": []},  # questions he must not be asked
     "private": {"terms": []},
     "report": {"zone_check": True, "utc_markers": ["UTC", "GMT"], "max_lines": 0, "max_code_lines": 0, "eod_time": "", "eod_check_min": 30},  # a final message with a UTC time while the user has another zone is held
     "learn": {"overlay_max_lines": 200},
@@ -95,6 +98,9 @@ def load() -> dict:
     if path.exists():
         user = tomllib.loads(path.read_text(encoding="utf-8"))
     cfg = _merge(DEFAULTS, user)
+    for old, new in (("task_interval_min", "interval_min"), ("task_eta_default_min", "eta_default_min")):  # keys of the installed hub's [checkup]
+        if old in user.get("checkup", {}) and new not in user.get("tasks", {}):
+            cfg["tasks"][new] = user["checkup"][old]
     cfg["_config_path"] = str(path)
     cfg["_config_dir"] = str(path.parent)
     return cfg

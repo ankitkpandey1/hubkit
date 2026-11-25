@@ -11,7 +11,26 @@ import traceback
 from pathlib import Path
 from typing import TypeGuard
 
-from . import compat, config, gate, gatectl, guardwatch, lessons, playbooks, preroute, replies, roster, routed, standing, status, store
+from . import (
+    checkup,
+    claims,
+    compat,
+    config,
+    gate,
+    gatectl,
+    guardwatch,
+    lessons,
+    playbooks,
+    preroute,
+    priority,
+    replies,
+    roster,
+    routed,
+    standing,
+    status,
+    store,
+    tasks,
+)
 from .orders import Orders, _word_re, hook_intake
 from .redact import redact
 from .status import read_status, render_block
@@ -149,7 +168,17 @@ def hook_session(cfg: dict, payload: dict) -> str:
     sd = store.state(cfg)
     store.touch_seen(sd, "session")
     store.write_atomic(sd / RELOAD_MARK, str(time.time()))
-    return rebound + render_block(cfg, Orders(cfg), read_status(cfg))
+    return "\n".join([rebound + render_block(cfg, Orders(cfg), read_status(cfg)), *watch_lines(cfg)])
+
+
+def watch_lines(cfg: dict) -> list[str]:
+    """After a session start or a compaction: a blocking line for each watcher that is not running."""
+    out = []
+    if not gate.watch_live(cfg):
+        out.append(f"hubkit BLOCKING: no `hubkit watch` runs, so nothing wakes you when work stalls or a log needs a person. NEXT: start in the background now: {gate.WATCH_CMD}")
+    if not gate.inbox_watch_live(cfg):
+        out.append(f"hubkit BLOCKING: no inbox watcher runs, so asks on his chat go unseen. NEXT: start in the background now: {gate.INBOX_WATCH_CMD}")
+    return out
 
 
 def _words(text: str) -> set[str]:
@@ -271,11 +300,11 @@ def hook_prompt(cfg: dict, payload: dict) -> str:
         routed.heard(cfg, [(now, peer, text)])
     if not store.is_human(text, origin):
         return reload
-    from . import tasks
-
     his_words = tasks.task_words(cfg, text, now)  # "stop W2" holds one, "stop" all, "resume" frees, "W2 is done" closes
     opened = [] if his_words else tasks.task_intake(cfg, text, now)  # "tasks: ..." opens one priority item per task
     drafting = draft_intake(cfg, text)
+    if not his_words and not opened:
+        priority.intake(cfg, text, now)  # his urgent words open or update the one priority item; it is not an order
     orders = Orders(cfg)
     before = {o["id"] for o in orders.live()}
     intake = [] if opened or his_words else hook_intake(orders, text)  # a prompt that gives tasks opens no order: tasks authorise nothing
@@ -290,8 +319,28 @@ def hook_prompt(cfg: dict, payload: dict) -> str:
         roster.note_correction(cfg, now)  # a correction soon after a brief to a role is counted against that role
     rule = standing.rule_line(orders.intents, sd, text, now)
     gate_lines = gatectl.prompt_lines(cfg, bool(corr), now)  # a correction restores a check that just warned; queued warnings show once
-    task_lines = [*his_words, *tasks.task_lead_lines(cfg, now), *tasks.task_due_lines(cfg, now)]
-    return "\n".join([*([reload] if reload else []), *task_lines, *gate_lines, *([rule] if rule else []), *routed.prompt_lines(cfg, now), *sweeps.prompt_lines(cfg, now), *intake, *playbooks.inject(pbs), *no_playbook(cfg, orders, text, before, pbs, now), *unordered_chase_lines(cfg, orders, text, now), *([corr] if corr else [])])
+    lead = priority.lead_lines(cfg, now, payload.get("transcript_path"))  # tasks first, then his urgent ask
+    task_lines = [*his_words, *lead, *task_due_lines(cfg, now)]
+    due = checkup_line(cfg, now)
+    return "\n".join([*([reload] if reload else []), *task_lines, *gate_lines, *([rule] if rule else []), *priority.fold(cfg, [*routed.prompt_lines(cfg, now), *sweeps.prompt_lines(cfg, now), *intake], lead), *([due] if due else []), *playbooks.inject(pbs), *no_playbook(cfg, orders, text, before, pbs, now), *unordered_chase_lines(cfg, orders, text, now), *([corr] if corr else [])])
+
+
+def checkup_line(cfg: dict, now: float) -> str:
+    """The "checkup due" line, or empty; a failing check must not break the hook."""
+    try:
+        return checkup.due_line(cfg, now)
+    except Exception as e:
+        store.append_row(store.state(cfg) / "hook-errors.jsonl", {"where": "checkup", "error": repr(e)[:200]})
+        return ""
+
+
+def task_due_lines(cfg: dict, now: float) -> list[str]:
+    """The "task check due" line, or none; a failing check must not break the hook."""
+    try:
+        return tasks.task_due_lines(cfg, now)
+    except Exception as e:
+        store.append_row(store.state(cfg) / "hook-errors.jsonl", {"where": "task.due", "error": repr(e)[:200]})
+        return []
 
 
 def _answer_text(resp: object) -> str:
@@ -311,6 +360,7 @@ def hook_answer(cfg: dict, payload: dict) -> str:
     if not store.is_human(text):
         return ""
     routed.close_asks(cfg, time.time())  # the user answered the card: nothing is blocked on the user now
+    claims.record_answer(cfg, payload.get("tool_response"))
     return "\n".join(hook_intake(Orders(cfg), text))
 
 
@@ -323,11 +373,10 @@ def hook_routed(cfg: dict, payload: dict) -> str:
     routed.scan_transcript(cfg, payload.get("transcript_path"))
     ti = payload.get("tool_input") or {}
     brief = str(ti.get("message") or ti.get("prompt") or "")
-    forbids = "\n".join(w for w in (lessons.brief_forbids_fix(cfg, brief), lessons.release_ban_warning(cfg, brief)) if w)
+    forbids = "\n".join(w for w in (lessons.brief_forbids_fix(cfg, brief), lessons.release_ban_warning(cfg, brief), claims.authority_warning(cfg, brief)) if w)
+    priority.note_tool(cfg, tool, ti)  # a routed job or an inbox read is the first action of his urgent ask
     item = routed.from_tool(cfg, tool, payload.get("tool_input") or {}, payload.get("tool_response"),
                             str(payload.get("tool_use_id") or ""))
-    from . import tasks
-
     try:
         held = [f"hubkit: task worker recorded: {g}" for g in tasks.note_workers(cfg, tool, ti, payload.get("tool_response"), item)]
     except Exception as e:  # a failing task note must not break the routed hook
@@ -377,7 +426,7 @@ def hook_pretool(cfg: dict, payload: dict) -> str:
     if tool == "Bash" and send_re(cfg).search(cmd):
         close_drafts(cfg, "sent")
         replies.auto_replied(cfg, cmd)
-    warning = lessons.tool_warning(cfg, tool, payload.get("tool_input") or {})
+    warning = "\n".join(w for w in (reload_line(cfg).replace("hubkit:", "hubkit WARNING:", 1), lessons.tool_warning(cfg, tool, payload.get("tool_input") or {})) if w)
     if not warning:
         return ""
     return json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": warning}})
@@ -404,8 +453,6 @@ def hook_stop(cfg: dict, payload: dict) -> str:
     reasons = [r for r in [reload_line(cfg)] if r]
     reasons += gate.stop_reasons(cfg, last, transcript=payload.get("transcript_path"), cwd=payload.get("cwd"))
     if not reasons:
-        from . import tasks
-
         if let := tasks.take_let_through(cfg):
             store.append_row(sd / "stop-guard.jsonl", {"blocked": False, "let_through": [store.safe(r, 300) for r in let]})
             return json.dumps({"systemMessage": "hubkit: the turn ends with tasks still open (the stop gate blocked twice for each reason this turn): " + "; ".join(r[:160] for r in let[:4])})

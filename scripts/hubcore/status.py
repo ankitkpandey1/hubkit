@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import glob
 import importlib.util
 import json
@@ -159,12 +160,21 @@ def _is_our_gate(att: dict) -> bool:
     return att.get("hookEvent") == "Stop" and str(text).startswith("hubkit")
 
 
+def _epoch(ts: str) -> float | None:
+    """Epoch of an ISO-8601 transcript timestamp, None when it does not parse."""
+    try:
+        return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except (ValueError, AttributeError):
+        return None
+
+
 def hook_errors(cfg: dict) -> dict:
     """Scan recent transcripts for failures of our hooks. Lives outside the hooks."""
     cutoff = time.time() - cfg["watchdog"]["transcript_scan_hours"] * 3600
+    window = float(cfg["watchdog"].get("hook_error_window_h", 6)) * 3600
     marker = "hubkit"
     count, last = 0, ""
-    kinds = ("hook_non_blocking_error", "hook_cancelled", "hook_blocking_error")
+    kinds = ("hook_non_blocking_error", "hook_blocking_error")
     for f in glob.glob(os.path.expanduser(cfg["paths"]["transcripts_glob"])):
         try:
             if os.path.getmtime(f) < cutoff:
@@ -178,8 +188,11 @@ def hook_errors(cfg: dict) -> dict:
                             continue
                         cmd = json.dumps(att)
                         if att.get("type") in kinds and marker in cmd and not _is_our_gate(att):
+                            ts = json.loads(line).get("timestamp", "")
+                            if (when := _epoch(ts)) is not None and time.time() - when > window:
+                                continue  # an old failure, long since fixed: do not keep waking the watch
                             count += 1
-                            last = json.loads(line).get("timestamp", last)
+                            last = ts or last
         except OSError:
             continue
     return {"count": count, "last": last}
@@ -306,7 +319,10 @@ def render_block(cfg: dict, orders: Orders, st: dict | None, now: float | None =
     if st is None:
         out.append("status: UNVERIFIED (no status.json yet; run `hubkit tick`)")
     else:
-        out += [f"hubkit REGRESSED {c}: the rule did not hold; add a check or rewrite it" for c in st.get("regressed", [])]
+        reg = st.get("regressed", [])
+        out += [f"hubkit REGRESSED {c}: the rule did not hold; add a check or rewrite it" for c in reg[:3]]
+        if len(reg) > 3:  # one line for the rest: sixteen lines would push the routed work out of the capped block
+            out.append(f"hubkit REGRESSED {len(reg) - 3} more rules did not hold: {', '.join(reg[3:])}. NEXT: add a check or rewrite each (learn.py review)")
         age = int((now - st["built"]) / 60)
         out.append(f"status built {age} min ago" + (f": UNVERIFIED, stale over {STALE_MIN} min" if age > STALE_MIN else ""))
         from . import tasks
@@ -323,8 +339,8 @@ def render_block(cfg: dict, orders: Orders, st: dict | None, now: float | None =
                 out.append(f"{kind}: " + "; ".join(f"{i['id']} {i['title']} (checked {int((now - float(i.get('verified') or i['added'])) / 60)}m ago)" for i in mine) + ahead)
         from . import replies, routed, trust
 
+        out += replies.block_lines(st["work"], now)  # before routed: a long routed list must not push a reply (a review ask) out of the capped block
         out += routed.block_lines(cfg, st["work"], now)
-        out += replies.block_lines(st["work"], now)
         from . import owed
 
         out += owed.block_lines(st["work"], now, int(cfg["requests"]["block_lines"]))
@@ -411,11 +427,11 @@ def evaluate(cfg: dict, orders: Orders, hook_err: dict, now: float) -> list[dict
         if o["state"] != "open":  # held and unconfirmed orders have no clock
             continue
         spec = orders.intents["kinds"].get(o["kind"], {})
-        age = (now - o["opened"]) / 60
+        age = store.awake_min(cfg, o["opened"], now)
         if not (o["moves"] or o["results"]) and age > spec.get("first_action_min", 5):
             found.append({"key": f"{o['id']}:no_first_action",
                           "msg": f"{o['id']} {o['kind']}: no first action after {int(age)} min"})
-        idle = (now - orders.last_movement(o)) / 60
+        idle = store.awake_min(cfg, orders.last_movement(o), now)
         if idle > spec.get("stall_min", 10):
             found.append({"key": f"{o['id']}:stalled",
                           "msg": f"{o['id']} {o['kind']}: no movement for {int(idle)} min"})
@@ -428,7 +444,7 @@ def evaluate(cfg: dict, orders: Orders, hook_err: dict, now: float) -> list[dict
             found.append({"key": f"{o['id']}:deadline",
                           "msg": f"{o['id']} {o['kind']}: past its deadline {store.clock(cfg, o['deadline'])}"})
     try:
-        from . import inbound, owed, routed, slow, watcher
+        from . import checkup, inbound, owed, priority, routed, slow, watcher
 
         found += owed.alerts(cfg, now)
         found += routed.alerts(cfg, now)
@@ -439,6 +455,8 @@ def evaluate(cfg: dict, orders: Orders, hook_err: dict, now: float) -> list[dict
         from . import sweeps
 
         found += sweeps.alerts(cfg, now)
+        found += priority.alerts(cfg, now)
+        found += checkup.alerts(cfg, now)
     except Exception as e:  # routed tracking must not break the tick
         found.append({"key": "routed:failed", "msg": f"routed-work check failed: {type(e).__name__}"})
     if hook_err["count"]:
@@ -478,6 +496,12 @@ def tick(cfg: dict, notify: bool = True, now: float | None = None) -> list[dict]
             return []
         orders = Orders(cfg)
         orders.repair_archive()
+        try:
+            from . import inbound
+
+            inbound.scan_stored(cfg)  # review asks already in the stored watcher output become reply items
+        except Exception as e:
+            store.append_row(config.state_dir(cfg) / "hook-errors.jsonl", {"where": "inbound.scan", "error": repr(e)[:200]})
         from . import sweeps
 
         closed = [*sweeps.tick_pass(cfg, orders, now), *routed_pass(cfg, now)]  # standing rules read the PRs before a review item closes

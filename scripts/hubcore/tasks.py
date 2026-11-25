@@ -25,17 +25,15 @@ from . import slow, status, store
 from .redact import redact_obj
 
 NOT_AN_ORDER = "NOT an order: it authorises no merge, release, deploy or message"
+WAITING_STATES = ("waiting", "blocked", "needs_input", "permission")
 WITHIN, WAITING, IDLE, OVERDUE, NOWORKER = "reported-within-ETA", "waiting-on-permission-prompt", "idle", "overdue", "no-worker"
 TASK_BLOCKS = 2  # the stop gate blocks this often for the same task reason in one turn, then lets the turn end with a line
 OVERRIDE_FILE = "tasks.json"
 
 
-def _mins(t0: float, t1: float) -> float:
-    return max(0.0, (t1 - t0) / 60)
-
-
-def _nn(name: object) -> str:
-    return re.sub(r"\[[^\]]*\]\s*$", "", str(name)).strip().lower()
+def _mins(cfg: dict, t0: float, t1: float) -> float:
+    """Awake minutes from t0 to t1 (the time the machine was off does not count)."""
+    return max(0.0, store.awake_min(cfg, t0, t1))
 
 
 # ---- what the user gives (typed prompt only; the hook has already dropped peer, harness and pasted text) ----
@@ -56,7 +54,7 @@ TASK_WORD = re.compile(
 )
 _QUOTED = re.compile(
     r"```.*?```|`[^`\n]*`|\"[^\"\n]*\"|“[^”\n]*”"
-    r"|(?<![A-Za-z0-9])'[^'\n]*'(?![A-Za-z0-9])"  # 'quoted'; an apostrophe (don't, Ankit's) is not a quote
+    r"|(?<![A-Za-z0-9])'[^'\n]*'(?![A-Za-z0-9])"  # 'quoted'; an apostrophe (don't, Sam's) is not a quote
     r"|(?m:^[ \t]*(?:>|&gt;)[^\n]*)",  # a quoted reply line
     re.S,
 )
@@ -343,7 +341,7 @@ def task_words(cfg: dict, text: str, now: float) -> list[str]:
     out: list[str] = []
     for rx in FINISH:
         for fm in rx.finditer(body):
-            if re.search(r"(?i)\b(?:not|never|isn't|aren't|wasn't)\b", body[max(0, fm.start() - 12) : fm.end()]):
+            if re.search(r"(?i)\b(?:not|never|cannot|\w+n['\u2019]t)\b", body[max(0, fm.start() - 12) : fm.end()]):  # "don't mark W1 finished"
                 continue
             hits = _match_task(open_tasks(cfg), fm.group("ref"), explicit=rx is FINISH[0])
             if len(hits) == 1:
@@ -391,7 +389,7 @@ def assign(cfg: dict, wid: str, owner: str, via: str = "hub", routed_id: str = "
     with store.locked(sd / "work.lock"):
         items = status.work_load(sd)
         t = _task(items, wid)
-        w = next((x for x in t.setdefault("workers", []) if _nn(x["name"]) == _nn(owner)), None)
+        w = next((x for x in t.setdefault("workers", []) if store.norm_name(x["name"]) == store.norm_name(owner)), None)
         if w is None:
             w = {"name": owner.strip(), "t": now, "via": via}
             t["workers"].append(w)
@@ -553,7 +551,7 @@ def eta_left(cfg: dict, task: dict, w: dict, now: float) -> float:
         spans.append((float(w["t"]), float(w["eta_min"])))
     if not spans:
         spans.append((float(w["t"]), float(cfg["tasks"]["eta_default_min"])))
-    return max(m - _mins(t0, now) for t0, m in spans)
+    return max(m - _mins(cfg, t0, now) for t0, m in spans)
 
 
 def task_state(cfg: dict, task: dict, now: float) -> tuple[str, str, str]:
@@ -631,7 +629,7 @@ def task_rows(cfg: dict, now: float) -> list[dict]:
 
 def task_due(cfg: dict, task: dict, now: float) -> bool:
     """A task is due a check when its interval of awake minutes passed since the last check (or since it was given)."""
-    return _mins(float(task.get("checked") or task["added"]), now) >= interval_of(cfg, task)
+    return _mins(cfg, float(task.get("checked") or task["added"]), now) >= interval_of(cfg, task)
 
 
 def task_due_lines(cfg: dict, now: float) -> list[str]:
@@ -657,9 +655,18 @@ def _override(cfg: dict) -> dict:
         return {}
 
 
+def _legacy_override(cfg: dict) -> dict:
+    """`checkup.json` of the installed hub (`hubkit checkup interval`): read, so a state dir from before 0.6 keeps its interval."""
+    try:
+        d = json.loads((store.state(cfg, create=False) / "checkup.json").read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except OSError, ValueError:
+        return {}
+
+
 def task_interval_min(cfg: dict) -> float:
     """Minutes between checks of a task: `hubkit tasks interval` (state), else `[tasks] interval_min` (15)."""
-    return float(_override(cfg).get("interval_min") or cfg["tasks"]["interval_min"])
+    return float(_override(cfg).get("interval_min") or _legacy_override(cfg).get("task_interval_min") or cfg["tasks"]["interval_min"])
 
 
 def set_interval(cfg: dict, minutes: int) -> str:
@@ -676,12 +683,20 @@ def interval_of(cfg: dict, task: dict) -> float:
 
 
 def session_state(cfg: dict, owner: str) -> dict:
-    """Whether the owner's live session file says it is working or stuck on a prompt."""
+    """What the live session file of this owner says: live (process still the same), socket, status, waitingFor.
+    The "[ref]" suffix of a session name is ignored when matching."""
     sess = slow.holder_session(cfg, owner)
     if not sess:
-        return {"live": False, "waiting": False, "text": "background agent (no session file)" if slow.AGENT_ID.match(owner) else "no live session"}
-    waiting = bool(sess.get("waitingFor")) or str(sess.get("status")) in ("waiting", "blocked")
-    return {"live": True, "waiting": waiting, "text": f"live, {sess.get('status', '?')}"}
+        return {"live": False, "text": "background agent (no session file)" if slow.AGENT_ID.match(owner) else "no live session"}
+    sock = str(sess.get("messagingSocketPath") or "")
+    waiting = bool(sess.get("waitingFor")) or str(sess.get("status")) in WAITING_STATES
+    return {
+        "live": True,
+        "waiting": waiting,
+        "status": str(sess.get("status", "?")),
+        "socket": bool(sock) and os.path.exists(sock),
+        "text": f"live, {sess.get('status', '?')}" + (f" ({store.safe(str(sess.get('waitingFor')), 30)})" if sess.get("waitingFor") else ""),
+    }
 
 
 def close(cfg: dict, wid: str, proof: str) -> str:

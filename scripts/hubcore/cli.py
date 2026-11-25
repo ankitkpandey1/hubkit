@@ -20,7 +20,9 @@ from . import (
     install,
     ledger,
     lessons,
+    logwatch,
     playbooks,
+    priority,
     replies,
     roster,
     routed,
@@ -46,7 +48,8 @@ def cmd_how(a: argparse.Namespace, cfg: dict) -> int:
     else:
         if not a.steps_file:
             raise ValueError("save needs --steps-file")
-        print(playbooks.save(a.arg, a.trigger, Path(a.steps_file).expanduser().read_text(encoding="utf-8"), a.quote, a.replace))
+        sf = Path(a.steps_file).expanduser()
+        print(playbooks.save(a.arg, a.trigger, sf.read_text(encoding="utf-8"), a.quote, a.replace, sf.stat().st_mtime))
         playbooks.note_saved(cfg, time.time())
     return 0
 
@@ -101,7 +104,7 @@ def cmd_order(a, cfg: dict) -> int:
 
 def cmd_work(a, cfg: dict) -> int:
     """Run a `work` verb (add, done, ls)."""
-    if a.action in ("done", "block", "estimate", "verify", "criterion", "assign", "every") and not a.id:
+    if a.action in ("done", "block", "estimate", "verify", "act", "criterion", "assign", "every") and not a.id:
         raise ValueError(f"work {a.action} needs a work id")
     if a.action == "add" and a.kind == "routed":
         if not (a.owner and a.title):
@@ -126,6 +129,8 @@ def cmd_work(a, cfg: dict) -> int:
         print(slow.re_estimate(cfg, a.id, a.minutes or 0, a.why))
     elif a.action == "verify":
         print(status.work_verify(cfg, a.id))
+    elif a.action == "act":
+        print(priority.mark_acted(cfg, a.id, a.note, a.inbox_read))
     elif a.action == "done":
         if any(i["id"] == a.id and i.get("kind") == "request" for i in status.work_load(store.state(cfg))):
             raise store.Refused(f'{a.id} is a request: it closes only with evidence. NEXT: hubkit req done {a.id} --evidence "..."')
@@ -331,6 +336,8 @@ def cmd_doctor(a, cfg: dict) -> int:
     dup = duplicate_hooks(Path(os.environ.get("HUBKIT_SETTINGS") or Path.home() / ".claude" / "settings.json"))
     if dup:
         print(f"WARNING settings.json runs hubkit hook more than once for: {', '.join(dup)}. Each run double-counts prompts and answers; remove the duplicate entries.")
+    if Orders(cfg).intents.get("intake", {}).get("auto_open", True):
+        print("WARNING auto_open is on in intents.toml: the prompt hook opens an order from any sentence holding an order word (a question, reported speech, a PR's label). Set `auto_open = false` under [intake]; orders then open by hand after a card names the act.")
     gaps = intents_gaps(cfg)
     if gaps:
         print(f"WARNING intents.toml lacks what intents.example.toml has: {', '.join(gaps)}. Copy those lines from the example; the checks they configure use built-in defaults or stay off.")
@@ -387,6 +394,10 @@ def build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--class", dest="cls", default="")
     tr.add_argument("--outcome", default="")
 
+    cu = sub.add_parser("checkup")
+    cu.add_argument("action", nargs="?", default="ls", choices=["ls", "done", "interval"])
+    cu.add_argument("minutes", nargs="?", type=int, help="interval: minutes between checks of tasks the user gave (default [tasks] interval_min, 15)")
+
     pe = sub.add_parser("peers", help="the peer roster: role, free/busy, record")
     pe.add_argument("action", choices=["ls", "set", "forget"])
     pe.add_argument("name", nargs="?", default="")
@@ -396,7 +407,7 @@ def build_parser() -> argparse.ArgumentParser:
     pe.add_argument("--free", action="store_true")
 
     ib = sub.add_parser("inbound")
-    ib.add_argument("action", choices=["ingest", "ls", "replied"])
+    ib.add_argument("action", choices=["ingest", "ls", "replied", "scan"])
     ib.add_argument("id", nargs="?", help="replied: the work id (W3) or message id of the ask")
     ib.add_argument("--note", default="", help="replied: what was sent")
     ib.add_argument("--file", help="the inbox watcher's output (default: stdin)")
@@ -451,7 +462,7 @@ def build_parser() -> argparse.ArgumentParser:
     tk.add_argument("action", nargs="?", default="ls", choices=["ls", "check", "done", "interval"])
     tk.add_argument("minutes", nargs="?", type=int, help="interval: minutes between checks of tasks (default [tasks] interval_min, 15)")
     w = sub.add_parser("work")
-    w.add_argument("action", choices=["add", "done", "ls", "estimate", "block", "verify", "criterion", "assign", "every"])
+    w.add_argument("action", choices=["add", "done", "ls", "estimate", "block", "verify", "act", "criterion", "assign", "every"])
     w.add_argument("id", nargs="?")
     w.add_argument("--kind", default="active")
     w.add_argument("--title", default="")
@@ -467,6 +478,7 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--evidence", default="", help="done (task): a merged PR URL or file:<path> that proves its done-when (a file must postdate the task)")
     w.add_argument("--why", default="", help="estimate: the reason for the new estimate")
     w.add_argument("--head", default="", help="routed: head sha the work was routed at")
+    w.add_argument("--inbox-read", action="store_true", help="act: the first action was reading his messages (--note says what they held)")
 
     t = sub.add_parser("tick")
     t.add_argument("--no-notify", action="store_true")
@@ -482,6 +494,9 @@ def build_parser() -> argparse.ArgumentParser:
     fd.add_argument("--since", default="2d", help="how far back for asks, peer prompts and PRs, for example 12h, 2d")
     dg = sub.add_parser("digest")
     dg.add_argument("--since", default="12h", help="how far back, for example 30m, 12h, 2d")
+    lg = sub.add_parser("log", help="release logs: lines that need a person")
+    lg.add_argument("action", choices=["ls", "ack"])
+    lg.add_argument("key", nargs="?", default="")
     hw = sub.add_parser("how", help="playbooks: how the user's recurring commands are done")
     hw.add_argument("action", choices=["ls", "show", "save", "match"])
     hw.add_argument("arg", nargs="?", default="", help="show/save: the playbook name; match: the text")
@@ -571,9 +586,19 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("inbound replied needs an id and --note \"<what was sent>\"")
                 print(replies.mark_replied(cfg, a.id, a.note))
             else:
-                print("\n".join(inbound.ingest(cfg, Path(a.file).read_text(encoding="utf-8") if a.file else sys.stdin.read())) or "nothing new")
+                lines = inbound.scan_stored(cfg) if a.action == "scan" else inbound.ingest(cfg, Path(a.file).read_text(encoding="utf-8") if a.file else sys.stdin.read())
+                print("\n".join(lines) or "nothing new")
+        elif a.cmd == "checkup":
+            from . import checkup
+
+            if a.action == "interval":
+                print(checkup.set_interval(cfg, a.minutes) if a.minutes is not None else f"task check interval is {int(checkup.task_interval_min(cfg))} min (non-task rows: {int(checkup.every_min(cfg))} min)")
+            else:
+                print(checkup.done(cfg) if a.action == "done" else "\n".join(checkup.render(cfg)))
         elif a.cmd == "how":
             return cmd_how(a, cfg)
+        elif a.cmd == "log":
+            print(logwatch.ack(cfg, a.key) if a.action == "ack" else "\n".join(f"{p['key']}  {p['path']}: {p['line']}" for p in logwatch.pending(cfg, Orders(cfg))) or "no unreported log lines")
         elif a.cmd == "asks":
             print("\n".join(lessons.asks_lines(cfg, a.since)))
         elif a.cmd == "watch":

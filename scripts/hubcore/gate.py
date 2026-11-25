@@ -2,10 +2,25 @@
 
 from __future__ import annotations
 
+import os
 import re
 import time
 
-from . import gatectl, lessons, mergestate, playbooks, replies, reportcheck, routed, slow, store
+from . import (
+    claims,
+    compat,
+    gatectl,
+    lessons,
+    logwatch,
+    mergestate,
+    playbooks,
+    priority,
+    replies,
+    reportcheck,
+    routed,
+    slow,
+    store,
+)
 from .orders import PR_REF, Orders
 from .status import work_load
 
@@ -29,6 +44,24 @@ def watch_live(cfg: dict) -> bool:
     except ValueError, OSError:
         return False
     return hooks.proc_start(int(pid)) == start
+
+
+def inbox_watch_live(cfg: dict) -> bool:
+    """True when `mep watch` (or `miseenplace watch`) runs. Always True when mep is off or not installed: nothing to arm."""
+    from . import status
+
+    exe = status.mep_binary(cfg) if cfg["mep"]["enabled"] else None
+    if not exe:
+        return True
+    want = os.path.realpath(exe)
+    return any(
+        os.path.realpath(a[i]) == want and "watch" in a[i + 1 : i + 3]
+        for a in compat.cmdlines()
+        for i in range(min(2, len(a)))
+    )
+
+
+INBOX_WATCH_CMD = "mep watch --cursor hub --interval 120 --max-cycles 30"
 
 
 def open_work(cfg: dict) -> bool:
@@ -184,7 +217,9 @@ def stop_checks(cfg: dict, last: str, now: float | None = None, transcript: str 
         out.extend((cid, x) for x in ([items] if isinstance(items, str) else items or []) if x)
 
     ci_bad = ci_not_green(cfg, last)  # before prompt_lines: a reviewed item closes there
-    add("routed", routed.prompt_lines(cfg, now))
+    lead = priority.lead_lines(cfg, now, transcript, tasks=False)  # his urgent ask leads; old STALLED/OVERDUE lines fold under it
+    add("urgent", lead)
+    add("routed", priority.fold(cfg, routed.prompt_lines(cfg, now), lead))
     add("blocker", blocker_reasons(cfg, last, now))
     add("unpushed", lessons.unpushed_work(last, cwd, transcript))
     add("unswept-asks", lessons.unswept_asks(cfg, last, now))
@@ -194,7 +229,9 @@ def stop_checks(cfg: dict, last: str, now: float | None = None, transcript: str 
     add("utc-time", reportcheck.utc_time(cfg, last))
     out += reportcheck.form(cfg, last)
     if refs := lessons.bare_refs(cfg, last):
-        add("bare-refs", f"hubkit: your message names {', '.join(refs[:4])} with no link. NEXT: give the full URL of each PR or issue so the user can click it")
+        urls = [u for r in refs[:4] for u in routed.refs(cfg, r) if u.startswith("http")]
+        add("bare-refs", f"hubkit: your message names {', '.join(refs[:4])} with no link. NEXT: give the full URL of each PR or issue so the user can click it"
+                         + (f", paste: {' '.join(urls)}" if urls else ""))
     try:
         add("slow", slow.gate_lines(cfg, now))
     except Exception as e:  # a failing estimate check must not wedge the hub's turn end
@@ -210,6 +247,19 @@ def stop_checks(cfg: dict, last: str, now: float | None = None, transcript: str 
         store.append_row(store.state(cfg) / "hook-errors.jsonl", {"where": "tasks.gate", "error": repr(e)[:200]})
     if open_work(cfg) and not watch_live(cfg):
         add("watch", f"hubkit: nothing will wake you when routed work stalls. NEXT: start in the background: {WATCH_CMD}")
+    if open_work(cfg) and not inbox_watch_live(cfg):
+        add("inbox-watch", f"hubkit: no inbox watcher runs, so asks on the user's chat go unseen. NEXT: start in the background: {INBOX_WATCH_CMD}")
+    from .hooks import checkup_line
+
+    add("checkup", checkup_line(cfg, now))
+    add("logwatch", logwatch.gate_lines(cfg, Orders(cfg)))
+    acts = claims.unordered_acts(cfg, transcript)
+    if r := claims.act_reason(acts):
+        add("unordered-act", r)
+        claims.flag_acts(cfg, acts)
+    add("claims", [r for r in (claims.unread_pr_claim(last, transcript), claims.unchecked_blame(last, transcript), claims.future_time(cfg, last, now)) if r])
+    if ask := claims.never_ask(cfg, last):
+        add("never-ask", f"hubkit: your message asks the user {ask!r}. Starting or stopping a box is the hub's job (server-control), not the user's decision. NEXT: do it and report; do not ask")
     add("ask-stale", [f"hubkit: the ask {i['id']} ({i['title'][:50]}) was asked {i['asked']} times with no answer. Stop asking. NEXT: take the safest default, record it with the reason, "
                       f"and go on: hubkit work done {i['id']} --note \"defaulted to ...\"" for i in work_load(store.state(cfg)) if i.get("kind") == "ask" and int(i.get("asked", 1)) >= 3])
     add("verdict", [f"hubkit: your message gives a verdict on #{n}, but GitHub shows no review at its current head "
