@@ -61,6 +61,7 @@ Other environment variables: `HUBKIT_SESSIONS` (directory of Claude Code session
 | Key | Default | Meaning |
 |---|---|---|
 | `transcript_scan_hours` | `24` | How far back to scan transcripts for hubkit hook failures. |
+| `hook_error_window_h` | `6` | A hook failure older than this (by its own timestamp) is not counted or alerted. |
 | `cron_stale_min` | `15` | `doctor` flags `seen/cron` as stale when the crontab runs hubkit and the file is older than this. |
 
 ### `[requests]`
@@ -80,6 +81,14 @@ Estimates and the slowness check (hub-internal, see architecture).
 | `floor_min` | `2` | A job is never SLOW under this many minutes. |
 | `tool_min` | `2` | A tool running this long is named in the why. |
 | `scan_kb` | `2048` | Tail of a transcript read for the why (tool names and queue operations only). |
+
+### `[priority]`
+
+`inbox_tools` (`["gmail", "zulip", "slack", "chat"]`): name parts that make an MCP tool a chat or mail reader, so a read through it counts as the first action on an inbox item. Add the name of your own chat product.
+
+### `[checkup]`
+
+`interval_min` (30): minutes between check-ups of routed, active and peer rows. `task_interval_min` (15): minutes between checks of tasks he gave; `hubkit checkup interval <min>` overrides it per state dir. `task_eta_default_min` (30): a task worker's ETA when no estimate was given.
 
 ### `[watcher]`
 

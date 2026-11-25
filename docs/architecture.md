@@ -62,6 +62,26 @@ An order is a row family in `orders.jsonl` (`open`, `move`, `hold`, `resume`, `c
 - **Chases.** A short prompt matching `intake.chase` while an order is open is recorded as a chase. Three chases print a stop-loss line.
 - **Close.** `order close` requires every evidence name the kind's `done_when` lists; `file:<path>` evidence must exist and be newer than the order. Evidence names in the kind's `sha_evidence` (the merge kind's `merged`) must hold a commit sha. A closed order is archived under `archive/archive_<day>.jsonl`.
 
+## Priority intake (`priority.py`)
+
+Class `priority-not-applied`: what he says is urgent must lead, in code.
+
+- **Intake.** A typed prompt with an urgent word ("urgent", "asap", "code red", "top/high priority", and typos such as "urgnt", "priotity") opens one `lead` work item (kind `priority`) quoting him; later prompts within 10 minutes, or while it has no first action, update it instead of adding a row. It is NOT an order: it authorises no merge, release, deploy or message, and `auto_open = false` for orders is unchanged.
+- **Inbox ask.** "check msgs", "read msg", "is X msg done?" make the item need an inbox read as its first action. `work act --inbox-read` or an inbox-reading tool call after the ask (an `mep` command, an agent briefed on the inbox, a mail or chat read tool) clears it; a plain `work act` does not.
+- **Lead.** While a lead item has no first action, the prompt hook and the stop hook print its `hubkit PRIORITY` line first (the stop hook blocks on it), and every `hubkit STALLED`/`OVERDUE` line is folded into one count line under it. The watchdog alerts after 5 minutes. A routed `SendMessage`/`Agent` is the first action of a plain item.
+- **Gaps.** Every heartbeat (`touch_seen`) first checks the newest file in `seen/`; older than 30 minutes, the quiet spell goes to `gaps.jsonl`, and routed stall/overdue clocks and order clocks subtract it (`store.awake_min`). Not yet applied to `slow.py` estimates.
+
+## Tasks he gives (`priority.py` tasks section, `checkup.py`, `gate.task_reasons`)
+
+`priority.parse_tasks` reads his typed prompt (the hook has already dropped peer, harness and pasted text) and `task_intake` opens one `kind: priority` item with `task: true`, `workers`, `done_when`, optional `every_min`, `blocker`, `held`. Old items lack these keys and behave as before (legacy priority items are never gated as tasks). `status.work_done` routes a task through `priority.done_proof`: his word, or evidence of the criterion. `checkup.task_rows` lists tasks first; `task_alerts` feeds the watchdog when a task's own interval passed; `checkup done` restarts the clocks and counts missed nudges (one miss means re-brief). `gate.task_reasons` blocks the stop for a task with no live worker inside its ETA, no ask and no blocker; `limit_task_repeats` lets the turn end after two blocks of the same reason. Fast track orders lists and clocks only; it never bypasses a guard, permission prompt, denial or the deploy, merge and message rules.
+
+## Check-ups, ETA and stored review asks (`checkup.py`, `routed.eta_holds`, `inbound.scan_stored`)
+
+- **Check-up.** `hubkit checkup` lists items and peers with live session state; `due_line` goes in the prompt and stop hooks and as a `checkup:due` watchdog alert while 30 awake minutes passed since `checkup done` and an item is not reported-within-ETA. Hubkit sends nothing.
+- **ETA.** A routed item whose estimate was stated (not defaulted by the hook) has no stall level until that many awake minutes passed since the ask, so no STALLED line and no re-brief step before then.
+- **Session names.** `store.norm_name` drops a trailing `[ref]`, so a session named `peer [93f867]` matches the owner `peer` everywhere `slow.holder_session` is used (the "no live session of that name" false alarm).
+- **Review asks.** Lines in `mep_watch*.out` that hold a review or re-review word and a PR become `REVIEW ASK` reply items, once per message id, shown in the status block until `work done`. Only stored text is read; a thread that is not in stored state needs the inbox, which hubkit does not read.
+
 ## Routed work (`routed.py`)
 
 A routed item is one outcome per (owner, PR number), or per owner when no PR is named, in `work.json`.

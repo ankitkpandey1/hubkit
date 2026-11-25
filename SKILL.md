@@ -54,6 +54,8 @@ A human prompt containing an order word (words come from `intents.toml`; hotfix,
 - **(d) Before saying something is gone or absent, read the code that writes it.** A missing file, row or log line is proof of nothing until you know what produces it and when. *Checked in code:* a final message that says something is gone, lost or absent, with no lookup in that turn, is held the same way.
 - **(e) A brief must not forbid the one action that clears the blocker.** Before sending a brief, check its banned-command list against the step the order needs. *Checked in code:* the routed hook warns when a brief's "do not / never" line shares a key word with an open order's blocker or fix.
 
+**His urgent words lead (enforced in code, class `priority-not-applied`).** A prompt with "urgent", "code red", "top priority", "asap" (or a typo) opens one priority work item quoting him, and a "check msgs" ask needs an inbox read first. Until `hubkit work act <id> --note ".."` (`--inbox-read` for a messages ask) the hooks lead with it and fold old STALLED/OVERDUE lines under it. It is not an order and authorises no merge, release, deploy or message. After a sleep gap (no heartbeat for 30 min) stall clocks do not count the gap.
+
 ## 4. Live status and routed work
 
 `hubkit work add --kind active|tracked|priority --title "..." [--owner X]`, `hubkit work done <id> --note "..."`, `hubkit work ls`. The work file holds only live items; finished ones move to `archive/archive_<day>.jsonl`. `hubkit status` rebuilds the block. Before saying anything is pending on the user, section 5 applies.

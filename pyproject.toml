@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.27.0"]  # newer hatchling writes Metadata-Version 2.5, which twine 6.2 rejects
 build-backend = "hatchling.build"
 
 [project]
 name = "hubkit-cli"
-version = "0.5.0"
+version = "0.6.0"
 description = "Session supervisor for Claude Code: hooks-based multi-agent orchestration with order clocks, routed-work tracking, a watchdog and a stop gate, standard library only."
 readme = "README.md"
 requires-python = ">=3.14"

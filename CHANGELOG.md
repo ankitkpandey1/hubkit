@@ -2,6 +2,27 @@
 
 All notable changes to this project are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.0] - 2026-11-25
+
+Brings in everything the live hub had that the public package lacked, so a switch-over loses nothing. One implementation each where task tracking and priority tracking overlapped: `tasks.py` owns tasks; `priority.py` and `checkup.py` keep only the non-task rows.
+
+### Added
+- Priority items (`priority.py`): urgent words and "check msgs" asks open a priority item that leads every prompt and blocks the stop until a first action is recorded (`hubkit work act ID --note ".." [--inbox-read]`).
+- `hubkit checkup [done]` and `checkup interval [min]`: read-only view of open tasks, routed and active rows and live peers, with one nudge each; `interval` is the same setting as `hubkit tasks interval`.
+- Claims check (`claims.py`): never-ask and batch-recipient warnings, `claims` and `never-ask` stop-gate checks.
+- Release-log watcher (`logwatch.py`): `hubkit log ls|ack`, `[watcher] log_globs` and `log_max_age_h`.
+- `hubkit inbound scan`, review-ask items marked `REVIEW ASK`, `unordered-act`, `inbox-watch`, `checkup`, `logwatch` and `urgent` stop-gate checks, `doctor` warning while `auto_open` is on, playbook `act` steps, ETA holds in routed work.
+- Awake-time clock (`store.awake_min`): task and check-up intervals skip the time the machine was off.
+- Config `[priority] inbox_tools` (default `gmail`, `zulip`, `slack`, `chat`): name parts of MCP tools whose read counts as an inbox read.
+- Config: `[checkup]` is still read as the legacy name of `[tasks] interval_min` and `eta_default_min`; `batch_to`.
+
+### Fixed
+- "don't mark W1 finished" (any `n't` form) no longer closes W1: the negation guard now covers contractions.
+- `hubkit status` shows at most three REGRESSED lines and folds the rest into one, so routed work is not pushed out of the capped block.
+
+### Changed
+- Build backend pinned to `hatchling==1.27.0`: newer hatchling writes Metadata-Version 2.5, which twine 6.2 rejects.
+
 ## [0.5.0] - 2026-11-25
 
 ### Added

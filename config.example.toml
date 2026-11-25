@@ -34,6 +34,7 @@ timeout_s = 30                # default 30
 
 [watchdog]
 transcript_scan_hours = 24
+hook_error_window_h = 6   # only hook failures newer than this alert
 
 [stop_guard]
 # Log only. A final message ending in "?" or containing one of these, while an order is open,
@@ -80,6 +81,11 @@ scan_kb = 2048         # tail of a transcript read for the why
 [tasks]
 # interval_min = 15           # minutes between checks of a task you gave; `hubkit tasks interval N` overrides
 # eta_default_min = 30        # a task worker's ETA when its brief stated none
+
+[checkup]
+# interval_min = 30           # minutes between check-ups of the rows that are not tasks
+# task_interval_min = 15      # legacy name of [tasks] interval_min; still read when [tasks] does not set it
+# task_eta_default_min = 30   # legacy name of [tasks] eta_default_min
 
 [watcher]
 stuck_min = 30        # hub busy this long with live jobs = stuck
