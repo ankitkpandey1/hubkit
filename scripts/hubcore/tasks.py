@@ -54,7 +54,12 @@ _TASK_FORMS = _forms("task") | _forms("tasks") | {"todo", "todos", "todoo", "tod
 TASK_WORD = re.compile(
     r"(?i)(?<![\w/.-])(?:" + "|".join(sorted(map(re.escape, _TASK_FORMS), key=len, reverse=True)) + r"|to-dos?)(?![\w-]|\.\w|/)"
 )
-_QUOTED = re.compile(r"```.*?```|`[^`\n]*`|\"[^\"\n]*\"|“[^”\n]*”", re.S)
+_QUOTED = re.compile(
+    r"```.*?```|`[^`\n]*`|\"[^\"\n]*\"|“[^”\n]*”"
+    r"|(?<![A-Za-z0-9])'[^'\n]*'(?![A-Za-z0-9])"  # 'quoted'; an apostrophe (don't, Ankit's) is not a quote
+    r"|(?m:^[ \t]*(?:>|&gt;)[^\n]*)",  # a quoted reply line
+    re.S,
+)
 _ASKING = {
     "what", "which", "how", "why", "show", "list", "status", "any", "where", "when", "who", "tell", "report", "many",
     "did", "does", "is", "are", "was", "were", "have", "has", "about", "if", "whether", "count", "check", "see", "read",

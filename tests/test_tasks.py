@@ -637,3 +637,28 @@ def test_quoted_resume_frees_nothing(env, text):
     env.prompt("stop")
     env.prompt(text)
     assert all(i.get("held") for i in tasks(env))
+
+
+QUOTED2 = [
+    "I might say 'mark W1 finished' later",
+    "later I will say 'stop' if it goes wrong",
+    "say 'stop W1' to hold one",
+    "> mark W1 finished",
+    "&gt; stop",
+    "he wrote:\n> W1 is done\nok",
+]
+
+
+@pytest.mark.parametrize("text", QUOTED2)
+def test_single_quoted_and_quoted_reply_words_do_nothing(env, text):
+    strict(env)
+    give(env, "tasks: 1. fix the login bug 2. update the docs")
+    env.prompt(text)
+    assert len(tasks(env)) == 2 and not any(i.get("held") for i in tasks(env))
+
+
+def test_apostrophes_are_not_quotes(env):
+    strict(env)
+    give(env, "tasks: 1. fix the login bug 2. update the docs")
+    env.prompt("stop W1, it's Ankit's call, don't ask")
+    assert any(i.get("held") for i in tasks(env))

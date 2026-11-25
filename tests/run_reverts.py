@@ -678,6 +678,8 @@ REVERTS = [
     ('task: the lists put tasks first', 'hubcore/tasks.py', 'sorted(rows, key=lambda r: r["state"] != NOWORKER)', 'list(rows)', 'tests/test_tasks.py::test_the_task_list_puts_no_worker_first_and_done_restarts_their_clock'),
     ('task: a task prompt opens no order', 'hubcore/hooks.py', 'intake = [] if opened or his_words else hook_intake(orders, text)', 'intake = hook_intake(orders, text)', 'tests/test_tasks.py::test_tasks_that_name_a_merge_or_a_deploy_authorise_neither'),
     ('task: quoted words are a mention', 'hubcore/tasks.py', '    body = _mask(text).strip()  # quoted text ("mark W1 finished") is a mention, not his word', '    body = text.strip()', 'tests/test_tasks.py::test_quoted_words_close_and_hold_nothing'),
+    ('task: single-quoted words are a mention', 'hubcore/tasks.py', '    r"|(?<![A-Za-z0-9])\'[^\'\\n]*\'(?![A-Za-z0-9])"  # \'quoted\'; an apostrophe (don\'t, Ankit\'s) is not a quote', '', 'tests/test_tasks.py::test_single_quoted_and_quoted_reply_words_do_nothing'),
+    ('task: quoted reply lines are a mention', 'hubcore/tasks.py', '    r"|(?m:^[ \\t]*(?:>|&gt;)[^\\n]*)",  # a quoted reply line', '    r"",', 'tests/test_tasks.py::test_single_quoted_and_quoted_reply_words_do_nothing'),
 ]
 
 
