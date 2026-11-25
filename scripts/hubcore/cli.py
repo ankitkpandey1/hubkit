@@ -26,6 +26,7 @@ from . import (
     routed,
     status,
     store,
+    tasks,
     trust,
     watcher,
 )
@@ -100,7 +101,7 @@ def cmd_order(a, cfg: dict) -> int:
 
 def cmd_work(a, cfg: dict) -> int:
     """Run a `work` verb (add, done, ls)."""
-    if a.action in ("done", "block", "estimate", "verify") and not a.id:
+    if a.action in ("done", "block", "estimate", "verify", "criterion", "assign", "every") and not a.id:
         raise ValueError(f"work {a.action} needs a work id")
     if a.action == "add" and a.kind == "routed":
         if not (a.owner and a.title):
@@ -110,8 +111,15 @@ def cmd_work(a, cfg: dict) -> int:
         print(routed.record(cfg, a.owner, a.title, prs, heads, review=routed.is_review(cfg, a.title + " " + " ".join(a.pr)), estimate=a.estimate)["id"])
     elif a.action == "add":
         print(status.work_add(cfg, a.kind, a.title, a.owner, a.note, a.estimate)["id"])
+    elif a.action == "criterion":
+        print(tasks.set_criterion(cfg, a.id, a.done_when))
+    elif a.action == "assign":
+        print(tasks.assign(cfg, a.id, a.owner))
+    elif a.action == "every":
+        print(tasks.set_every(cfg, a.id, a.minutes or 0))
     elif a.action == "block":
-        print(watcher.set_blocked(cfg, a.id, a.on))
+        is_task = any(i["id"] == a.id and i.get("task") for i in status.work_load(store.state(cfg)))
+        print(tasks.task_block(cfg, a.id, a.on, a.fix, a.holder) if is_task else watcher.set_blocked(cfg, a.id, a.on))
     elif a.action == "estimate":
         from . import slow
 
@@ -121,6 +129,9 @@ def cmd_work(a, cfg: dict) -> int:
     elif a.action == "done":
         if any(i["id"] == a.id and i.get("kind") == "request" for i in status.work_load(store.state(cfg))):
             raise store.Refused(f'{a.id} is a request: it closes only with evidence. NEXT: hubkit req done {a.id} --evidence "..."')
+        if (closed := tasks.finish(cfg, a.id, a.evidence)) is not None:
+            print(closed)
+            return 0
         from . import threads
 
         threads.check_done(cfg, a.id, a.note)  # a declared check needs a note saying what it showed
@@ -129,8 +140,19 @@ def cmd_work(a, cfg: dict) -> int:
         if before and (settled := threads.settle_line_for(cfg, a.id)):
             print(settled)
     else:
-        for i in status.work_load(store.state(cfg)):
-            print(f"{i['id']} [{i['kind']}] {i['title']}")
+        for i in sorted(status.work_load(store.state(cfg)), key=lambda i: not i.get("task")):  # tasks first
+            print(f"{i['id']} [{'task' if i.get('task') else i['kind']}] {i['title']}")
+    return 0
+
+
+def cmd_tasks(a: argparse.Namespace, cfg: dict) -> int:
+    """Run a `tasks` verb: ls (the open tasks, no-worker first), check (same, as a due check), done (the check is recorded), interval."""
+    if a.action == "interval":
+        print(tasks.set_interval(cfg, a.minutes) if a.minutes is not None else f"task check interval is {int(tasks.task_interval_min(cfg))} min")
+    elif a.action == "done":
+        print(tasks.check_done(cfg))
+    else:
+        print("\n".join(tasks.render(cfg)))
     return 0
 
 
@@ -425,8 +447,11 @@ def build_parser() -> argparse.ArgumentParser:
     sr.add_argument("--word", default="", help="add, inbound: only asks holding this word")
     sr.add_argument("--until", default="", help="add: stop firing after this date (2026-12-01 or 2026-12-01 18:00, the user's zone)")
 
+    tk = sub.add_parser("tasks")
+    tk.add_argument("action", nargs="?", default="ls", choices=["ls", "check", "done", "interval"])
+    tk.add_argument("minutes", nargs="?", type=int, help="interval: minutes between checks of tasks (default [tasks] interval_min, 15)")
     w = sub.add_parser("work")
-    w.add_argument("action", choices=["add", "done", "ls", "estimate", "block", "verify"])
+    w.add_argument("action", choices=["add", "done", "ls", "estimate", "block", "verify", "criterion", "assign", "every"])
     w.add_argument("id", nargs="?")
     w.add_argument("--kind", default="active")
     w.add_argument("--title", default="")
@@ -435,7 +460,11 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--pr", action="append", default=[], help="routed: PR URL (repeatable)")
     w.add_argument("--estimate", type=int, help="minutes this job should take")
     w.add_argument("--minutes", type=int, help="estimate: the new total minutes")
-    w.add_argument("--on", default="", help="block: the job this one waits on (empty clears)")
+    w.add_argument("--on", default="", help="block: the job this one waits on (empty clears); for a task, what it waits on")
+    w.add_argument("--fix", default="", help="block (task): the action running now to clear the blocker")
+    w.add_argument("--holder", default="", help="block (task): who runs the fix")
+    w.add_argument("--done-when", default="", help="criterion (task): what shows it is finished, in words evidence can prove")
+    w.add_argument("--evidence", default="", help="done (task): a merged PR URL or file:<path> that proves its done-when (a file must postdate the task)")
     w.add_argument("--why", default="", help="estimate: the reason for the new estimate")
     w.add_argument("--head", default="", help="routed: head sha the work was routed at")
 
@@ -499,6 +528,8 @@ def main(argv: list[str] | None = None) -> int:
             return warn_root_closed(a, cfg, cmd_order(a, cfg))
         elif a.cmd == "work":
             return cmd_work(a, cfg)
+        elif a.cmd == "tasks":
+            return cmd_tasks(a, cfg)
         elif a.cmd == "req":
             return warn_root_closed(a, cfg, cmd_req(a, cfg))
         elif a.cmd == "standing":

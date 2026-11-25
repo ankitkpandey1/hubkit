@@ -81,6 +81,16 @@ Silence on routed work past `stall_min` (reviews: `review_stall_min`, hard `OVER
 
 `hubkit doctor` prints the bind, heartbeat ages (`seen/cron` is touched by every `tick`, so it tells a dead cron from an idle one), hook errors and a count of secret-shaped strings in state (never the strings).
 
+### Tasks the user gives
+
+When the user's typed prompt gives tasks ("tasks:", "todo", a numbered list introduced as tasks, "new task ..."), the prompt hook opens one priority item per task (a list is split; a prompt that names none makes one item quoting it; a question, "what tasks are running?", peer or harness text, pasted content and filenames open nothing). A task is priority: first in every list, never queued behind other work, open until it is finished. It authorises no merge, release, deploy or message, and the prompt opens no order.
+
+- **Finish.** The user's typed word naming it ("mark W5 finished", "the login fix is done"; never a question or a peer's text), or `hubkit work done ID --evidence <merged PR URL|file:path>` once a criterion exists (`hubkit work criterion ID --done-when "..."`, or "done when ..." in the prompt; after a `;` it covers every task of the line, inside one task it covers that task). A file must exist and postdate the task; a PR must be merged on GitHub; any other page is refused (save the proof to a file). With no criterion and no word, `work done` is refused (exit 3). A criterion you wrote is marked as yours.
+- **Workers.** `hubkit work assign ID --owner X`; a SendMessage or Agent brief that names the task id, its PR number or clearly its title records its recipient as a worker. A task with no worker says so.
+- **Clock.** Every `[tasks] interval_min` (15) minutes: `hubkit tasks interval N`, per task `hubkit work every ID --minutes N`. The watch exits with `TASK CHECK DUE`; `hubkit tasks` lists them (no worker first) with the nudge; send it or re-brief, then `hubkit tasks done`. hubkit sends nothing.
+- **Stop gate (check `task`).** The turn may end only if each open task has a live worker inside its ETA, or waits on the user (an `ask` item naming it), or on a named blocker (`hubkit work block ID --on .. --fix .. --holder ..`), and a watch runs. After two blocks for the same reason in one turn the stop is allowed with a line saying what is open. "stop" holds every open task (and says so), "stop W5" or "pause the login bug" holds that one; "resume" frees them.
+- **Fast track** ("by hook or crook") means first in every list, a shorter clock, a re-brief to another owner after one missed nudge, and never queued behind other work. It never bypasses a guard, a permission prompt, a denial or any deploy, merge or message rule.
+
 ## 7. Reporting
 
 - At most 15 lines. Lead with what changed or what the user must decide. Tag claims verified / read / inferred. Full URLs. Times in the user's zone.

@@ -271,13 +271,17 @@ def hook_prompt(cfg: dict, payload: dict) -> str:
         routed.heard(cfg, [(now, peer, text)])
     if not store.is_human(text, origin):
         return reload
+    from . import tasks
+
+    his_words = tasks.task_words(cfg, text, now)  # "stop W2" holds one, "stop" all, "resume" frees, "W2 is done" closes
+    opened = [] if his_words else tasks.task_intake(cfg, text, now)  # "tasks: ..." opens one priority item per task
     drafting = draft_intake(cfg, text)
     orders = Orders(cfg)
     before = {o["id"] for o in orders.live()}
-    intake = hook_intake(orders, text)
+    intake = [] if opened or his_words else hook_intake(orders, text)  # a prompt that gives tasks opens no order: tasks authorise nothing
     from . import owed, sweeps
 
-    if not drafting:
+    if not drafting and not opened and not his_words:
         intake += owed.intake(cfg, orders, text, bool({o["id"] for o in orders.live()} - before), now)  # the user's plain asks: open, or chase
     pbs = playbooks.match(text)
     playbooks.note_turn(cfg, [pb["name"] for pb in pbs])
@@ -286,7 +290,8 @@ def hook_prompt(cfg: dict, payload: dict) -> str:
         roster.note_correction(cfg, now)  # a correction soon after a brief to a role is counted against that role
     rule = standing.rule_line(orders.intents, sd, text, now)
     gate_lines = gatectl.prompt_lines(cfg, bool(corr), now)  # a correction restores a check that just warned; queued warnings show once
-    return "\n".join([*([reload] if reload else []), *gate_lines, *([rule] if rule else []), *routed.prompt_lines(cfg, now), *sweeps.prompt_lines(cfg, now), *intake, *playbooks.inject(pbs), *no_playbook(cfg, orders, text, before, pbs, now), *unordered_chase_lines(cfg, orders, text, now), *([corr] if corr else [])])
+    task_lines = [*his_words, *tasks.task_lead_lines(cfg, now), *tasks.task_due_lines(cfg, now)]
+    return "\n".join([*([reload] if reload else []), *task_lines, *gate_lines, *([rule] if rule else []), *routed.prompt_lines(cfg, now), *sweeps.prompt_lines(cfg, now), *intake, *playbooks.inject(pbs), *no_playbook(cfg, orders, text, before, pbs, now), *unordered_chase_lines(cfg, orders, text, now), *([corr] if corr else [])])
 
 
 def _answer_text(resp: object) -> str:
@@ -321,9 +326,18 @@ def hook_routed(cfg: dict, payload: dict) -> str:
     forbids = "\n".join(w for w in (lessons.brief_forbids_fix(cfg, brief), lessons.release_ban_warning(cfg, brief)) if w)
     item = routed.from_tool(cfg, tool, payload.get("tool_input") or {}, payload.get("tool_response"),
                             str(payload.get("tool_use_id") or ""))
+    from . import tasks
+
+    try:
+        held = [f"hubkit: task worker recorded: {g}" for g in tasks.note_workers(cfg, tool, ti, payload.get("tool_response"), item)]
+    except Exception as e:  # a failing task note must not break the routed hook
+        store.append_row(store.state(cfg) / "hook-errors.jsonl", {"where": "tasks.workers", "error": repr(e)[:200]})
+        held = []
+    if held and item and item.get("behind"):
+        held.append(f"hubkit WARNING: the task went to {item['owner']}, who already holds {', '.join(item['behind'])}: a task never queues behind other work. NEXT: send it to a free owner now")
     if not item:
-        return forbids or ""
-    out = f"hubkit: tracking {item['id']} routed to {item['owner']}; stall clock {routed.opts(cfg)['stall_min']} min"
+        return "\n".join(x for x in [*held, forbids] if x)
+    out = "".join(f"{h}\n" for h in held) + f"hubkit: tracking {item['id']} routed to {item['owner']}; stall clock {routed.opts(cfg)['stall_min']} min"
     if item.get("estimate_min") is not None:
         out += f"; estimate {item['estimate_min']:g}m"
         if item.get("estimate_defaulted"):
@@ -390,6 +404,11 @@ def hook_stop(cfg: dict, payload: dict) -> str:
     reasons = [r for r in [reload_line(cfg)] if r]
     reasons += gate.stop_reasons(cfg, last, transcript=payload.get("transcript_path"), cwd=payload.get("cwd"))
     if not reasons:
+        from . import tasks
+
+        if let := tasks.take_let_through(cfg):
+            store.append_row(sd / "stop-guard.jsonl", {"blocked": False, "let_through": [store.safe(r, 300) for r in let]})
+            return json.dumps({"systemMessage": "hubkit: the turn ends with tasks still open (the stop gate blocked twice for each reason this turn): " + "; ".join(r[:160] for r in let[:4])})
         return ""
     store.append_row(sd / "stop-guard.jsonl", {"blocked": True, "reasons": [store.safe(r, 300) for r in reasons]})
     return json.dumps({"decision": "block", "reason": "\n".join(reasons)})

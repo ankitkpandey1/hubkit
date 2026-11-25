@@ -37,6 +37,7 @@ DEFAULTS: dict = {
                "done_when_markers": ["Done-when:", "Done when:"], "require_done_when": "warn"},
     "requests": {"stall_min": 60, "overdue_min": 120, "floor_min": 10, "overdue_factor": 2.0, "similarity": 0.6, "max_open": 20, "title_chars": 120, "block_lines": 5,
                  "text_chars": 600, "max_parts": 8, "false_min": 3, "false_ratio": 0.5, "window_days": 14},
+    "tasks": {"interval_min": 15, "eta_default_min": 30},  # tasks the user gives: check interval and the default worker ETA (minutes)
     "slow": {"min_samples": 3, "order_default_min": 30, "floor_min": 2, "tool_min": 2, "scan_kb": 2048},
     "watcher": {"stale_agent_min": 30, "reply_owed_min": 60, "reply_floor_min": 10, "reply_min_samples": 3, "verify_stale_min": 180, "stuck_min": 30, "unhandled_min": 10, "waiting_min": 3, "active_s": 120, "watch_grace_min": 5, "notify_user": True},
     "mep": {"enabled": True, "timeout_s": 30},

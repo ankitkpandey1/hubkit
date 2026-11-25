@@ -309,10 +309,13 @@ def render_block(cfg: dict, orders: Orders, st: dict | None, now: float | None =
         out += [f"hubkit REGRESSED {c}: the rule did not hold; add a check or rewrite it" for c in st.get("regressed", [])]
         age = int((now - st["built"]) / 60)
         out.append(f"status built {age} min ago" + (f": UNVERIFIED, stale over {STALE_MIN} min" if age > STALE_MIN else ""))
+        from . import tasks
+
+        out += tasks.block_lines(cfg, [i for i in st["work"] if i.get("task")], now)
         for kind in ("priority", *(k for k in WORK_KINDS if k != "priority")):
             if kind in ("routed", "reply"):
                 continue  # listed below with owner, age and last-heard / PR state
-            mine = [i for i in st["work"] if i["kind"] == kind]
+            mine = [i for i in st["work"] if i["kind"] == kind and not i.get("task")]
             if mine:
                 ahead = ""
                 if kind == "priority" and any(i["kind"] == "active" for i in st["work"]):
@@ -377,8 +380,8 @@ def own_work_alerts(cfg: dict, now: float) -> list[dict]:
     """The hub's own work (active, priority) needs an estimate, and an overrun one is said out loud."""
     out = []
     for i in work_load(store.state(cfg)):
-        if i.get("kind") not in ("active", "priority"):
-            continue
+        if i.get("kind") not in ("active", "priority") or i.get("task"):
+            continue  # a task is checked by tasks.py on its own interval
         age = (now - i["added"]) / 60
         est = i.get("estimate_min")
         if est is None and age > 5:

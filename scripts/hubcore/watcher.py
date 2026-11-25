@@ -89,7 +89,9 @@ def liveness_checks(cfg: dict, orders: Orders) -> list[dict]:
 
 def checks(cfg: dict, orders: Orders, now: float) -> list[dict]:
     """Every watcher alert that holds now."""
-    return [*hub_checks(cfg, orders, now), *peer_checks(cfg, now), *liveness_checks(cfg, orders), *stale_agent_checks(cfg, now)]
+    from . import tasks
+
+    return [*tasks.alerts(cfg, now), *hub_checks(cfg, orders, now), *peer_checks(cfg, now), *liveness_checks(cfg, orders), *stale_agent_checks(cfg, now)]
 
 
 def stale_agent_checks(cfg: dict, now: float) -> list[dict]:

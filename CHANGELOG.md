@@ -2,7 +2,15 @@
 
 All notable changes to this project are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.4.1] - 2026-11-12
+## [0.5.0] - 2026-11-25
+
+### Added
+- Tasks (`tasks.py`): when the user's typed prompt gives tasks ("tasks:", "todo" and typos, a numbered list introduced as tasks, "new task ..."), the prompt hook opens one priority item per task and opens no order. A question, a status ask, peer or harness text, pasted or quoted text and filenames open nothing. A task is open until the user's typed word names it ("mark W5 finished") or, once it has a done-when criterion (`hubkit work criterion ID --done-when ".."`, or "done when ..." in the prompt; after a `;` it covers every task of the line), `hubkit work done ID --evidence <merged PR URL|file:path>` proves it: a file must exist and postdate the task, a PR must be merged on GitHub, any other page is refused. With no criterion and no word `work done` is refused (exit 3). A criterion the hub wrote is marked as the hub's.
+- Each task lists its workers (`hubkit work assign`, or a SendMessage/Agent brief that names the task id, its PR or clearly its title) and says so when it has none. `hubkit tasks` lists open tasks (no worker first) with the nudge; `hubkit tasks interval N` and `[tasks] interval_min` (15) set the check interval, `hubkit work every ID --minutes N` one task's; the watch exits with `TASK CHECK DUE` when one is due; `hubkit tasks done` restarts the clocks and a missed nudge becomes a re-brief to another owner. hubkit sends nothing.
+- Stop-gate check `task`: while a task is open the turn may end only if each has a live worker inside its ETA, an `ask` item naming it, or a named blocker (`hubkit work block ID --on .. --fix .. --holder ..`), and a watch runs; the same reason blocks at most twice per turn. The user's "stop" holds every open task and says so; "stop W5" or "pause the login bug" holds that one; "resume" frees them.
+- Fast track means first in every list, a shorter clock, an earlier re-brief and never queued behind other work; it never bypasses a guard, a permission prompt, a denial or any deploy, merge or message rule. New `[tasks]` keys.
+
+## [0.4.1] - 2026-11-12## [0.4.1] - 2026-11-12
 
 First release since 0.2.4; versions 0.3.0 and 0.4.0 were not published separately. This one holds both: the new trackers and checks, and the lifecycle table with the agent-friendly CLI.
 

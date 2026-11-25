@@ -33,7 +33,9 @@ def watch_live(cfg: dict) -> bool:
 
 def open_work(cfg: dict) -> bool:
     """True while routed work or a live open order exists."""
-    return bool(routed.items(cfg)) or any(o["state"] == "open" for o in Orders(cfg).live())
+    from . import tasks
+
+    return bool(routed.items(cfg)) or any(o["state"] == "open" for o in Orders(cfg).live()) or bool(tasks.open_tasks(cfg))
 
 
 def blocked_on_user(cfg: dict) -> bool:
@@ -200,6 +202,12 @@ def stop_checks(cfg: dict, last: str, now: float | None = None, transcript: str 
     from . import owed
 
     add("requests", owed.gate_lines(cfg, last, now))
+    from . import tasks
+
+    try:
+        add("task", tasks.gate_reasons(cfg, now))
+    except Exception as e:  # a failing task check must not wedge the hub's turn end
+        store.append_row(store.state(cfg) / "hook-errors.jsonl", {"where": "tasks.gate", "error": repr(e)[:200]})
     if open_work(cfg) and not watch_live(cfg):
         add("watch", f"hubkit: nothing will wake you when routed work stalls. NEXT: start in the background: {WATCH_CMD}")
     add("ask-stale", [f"hubkit: the ask {i['id']} ({i['title'][:50]}) was asked {i['asked']} times with no answer. Stop asking. NEXT: take the safest default, record it with the reason, "

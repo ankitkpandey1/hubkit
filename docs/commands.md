@@ -27,6 +27,14 @@
 | `order open\|confirm\|move\|block\|result\|hold\|resume\|cancel\|close` | Change an order | write | no |
 | `order metrics` | A day's orders and chases | read | always JSON |
 | `work ls` | Live work items | read | yes: `{"work": [...]}` |
+| `tasks [ls\|check]` | Open tasks the user gave (no worker first): state, who holds each, done-when and the nudge. Read-only; hubkit sends nothing. | read | no |
+| `tasks done` | Record that the tasks were checked now (restarts their clocks; an uncovered task counts a missed nudge, and the next nudge is a re-brief). | write | no |
+| `tasks interval [N]` | Show or set the minutes between checks of tasks (default `[tasks] interval_min`, 15). | write | no |
+| `work criterion ID --done-when ".."` | Task: what finished means, in words evidence can prove. | write | no |
+| `work assign ID --owner X` | Task: record the agent or peer that holds it (a brief naming the task does this by itself). | write | no |
+| `work every ID --minutes N` | Task: its own check interval (0 clears). | write | no |
+| `work block ID --on .. --fix .. --holder ..` | For a task: a named blocker needs all three. | write | no |
+| `work done ID --evidence <merged PR URL\|file:path>` | For a task: close it with evidence of its done-when (it also closes on the user's typed word). Refused with exit 3 otherwise. | write | no |
 | `work add\|done\|estimate\|block\|verify` | Change work items | write | no |
 | `req ls` | Open requests (with parts); `--learned`: the verbs intake muted and why | read | yes: `{"requests": [...]}`; `--learned`: `{"muted", "keys", "misses"}` |
 | `req show ID` | The full record: text, parts, notes, chases, age | read | yes: `{"request": {...}}` |

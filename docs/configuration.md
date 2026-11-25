@@ -136,6 +136,12 @@ Estimates and the slowness check (hub-internal, see architecture).
 | `max_reads` | `8` | gh reads per run. |
 | `gh_timeout_s` | `5` | Timeout of each read. |
 
+### `[tasks]` (tasks the user gives)
+| Key | Default | Meaning |
+|---|---|---|
+| `interval_min` | `15` | Minutes between checks of a task; `hubkit tasks interval N` overrides it for a state dir, `hubkit work every ID --minutes N` for one task. |
+| `eta_default_min` | `30` | A task worker's ETA when its brief stated no estimate. |
+
 ### `[gate]`
 | Key | Default | Meaning |
 |---|---|---|

@@ -77,6 +77,10 @@ floor_min = 2          # never SLOW under this many minutes
 tool_min = 2           # a tool running this long is named in the why
 scan_kb = 2048         # tail of a transcript read for the why
 
+[tasks]
+# interval_min = 15           # minutes between checks of a task you gave; `hubkit tasks interval N` overrides
+# eta_default_min = 30        # a task worker's ETA when its brief stated none
+
 [watcher]
 stuck_min = 30        # hub busy this long with live jobs = stuck
 unhandled_min = 10    # an alert this old and no hub heartbeat since = unhandled
